@@ -10,7 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write  # Required for trusted publishing (OIDC)
+      id-token: write       # Required for trusted publishing (OIDC)
+      attestations: write   # Required for sigstore attestations
 
     steps:
       - uses: actions/checkout@v4
@@ -30,5 +31,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
         # Uses trusted publishing (OIDC) - no API token needed
         # Configure at: https://pypi.org/manage/project/oubliette-shield/settings/publishing/
