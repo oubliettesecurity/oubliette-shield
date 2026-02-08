@@ -200,9 +200,6 @@ ShieldResult(verdict, scores, session_state)
 - **Multi-turn Escalation** - Accumulates attack patterns across turns
 - **Input Sanitization** - HTML, scripts, markdown, CSV formula, CDATA, event handlers
 
-## About
-
-Built by [Oubliette Security](https://oubliettesecurity.com) - a disabled veteran-owned business specializing in cyber deception, AI security, and red teaming.
 
 ## License
 
