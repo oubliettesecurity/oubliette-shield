@@ -17,7 +17,7 @@ Usage with Flask:
     app.register_blueprint(create_shield_blueprint(shield), url_prefix='/shield')
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .sanitizer import sanitize_input
 from .pattern_detector import detect_attack_patterns
@@ -28,6 +28,9 @@ from .ml_client import MLClient
 from .ensemble import EnsembleEngine
 from .session import SessionManager
 from .rate_limiter import RateLimiter
+from .storage import StorageBackend, MemoryStorage, SQLiteStorage
+from .deception import DeceptionResponder
+from .webhooks import WebhookManager
 
 __all__ = [
     "__version__",
@@ -43,6 +46,14 @@ __all__ = [
     "EnsembleEngine",
     "SessionManager",
     "RateLimiter",
+    # Storage
+    "StorageBackend",
+    "MemoryStorage",
+    "SQLiteStorage",
+    # Deception
+    "DeceptionResponder",
+    # Webhooks
+    "WebhookManager",
     # LLM providers
     "create_llm_judge",
     "chat_completion",
@@ -50,17 +61,25 @@ __all__ = [
     "create_shield_blueprint",
 ]
 
+# Conditional exports for optional integrations
+try:
+    from .models.local_inference import LocalMLClient
+    __all__.append("LocalMLClient")
+except ImportError:
+    pass
+
 
 class ShieldResult:
     """Result of a Shield analysis."""
 
     __slots__ = (
         "verdict", "ml_result", "llm_verdict", "sanitizations",
-        "session", "detection_method", "blocked",
+        "session", "detection_method", "blocked", "deception_response",
     )
 
     def __init__(self, verdict, ml_result=None, llm_verdict=None,
-                 sanitizations=None, session=None, detection_method=None):
+                 sanitizations=None, session=None, detection_method=None,
+                 deception_response=None):
         self.verdict = verdict
         self.ml_result = ml_result
         self.llm_verdict = llm_verdict
@@ -68,9 +87,10 @@ class ShieldResult:
         self.session = session or {}
         self.detection_method = detection_method or "unknown"
         self.blocked = verdict in ("MALICIOUS", "SAFE_REVIEW")
+        self.deception_response = deception_response
 
     def to_dict(self):
-        return {
+        result = {
             "verdict": self.verdict,
             "blocked": self.blocked,
             "detection_method": self.detection_method,
@@ -80,6 +100,9 @@ class ShieldResult:
             "sanitizations": self.sanitizations,
             "session_escalated": self.session.get("escalated", False),
         }
+        if self.deception_response is not None:
+            result["deception_response"] = self.deception_response
+        return result
 
 
 class Shield:
@@ -93,16 +116,36 @@ class Shield:
         ml_client: Custom MLClient instance (optional)
         session_manager: Custom SessionManager instance (optional)
         rate_limiter: Custom RateLimiter instance (optional)
+        deception_responder: DeceptionResponder instance (optional)
+        webhook_manager: WebhookManager instance (optional)
     """
 
     def __init__(self, llm_judge=None, ml_client=None,
-                 session_manager=None, rate_limiter=None):
+                 session_manager=None, rate_limiter=None,
+                 deception_responder=None, webhook_manager=None):
         self.session_manager = session_manager or SessionManager()
         self.rate_limiter = rate_limiter or RateLimiter()
         self.ensemble = EnsembleEngine(
             llm_judge=llm_judge,
             ml_client=ml_client,
         )
+
+        # Deception responder
+        from . import config as _cfg
+        if deception_responder is not None:
+            self.deception_responder = deception_responder
+        elif _cfg.DECEPTION_ENABLED:
+            self.deception_responder = DeceptionResponder(mode=_cfg.DECEPTION_MODE)
+        else:
+            self.deception_responder = None
+
+        # Webhook manager
+        if webhook_manager is not None:
+            self.webhook_manager = webhook_manager
+        elif _cfg.WEBHOOK_URLS:
+            self.webhook_manager = WebhookManager()
+        else:
+            self.webhook_manager = None
 
     def start(self):
         """Start background threads (session cleanup)."""
@@ -156,6 +199,29 @@ class Shield:
         else:
             detection_method = "escalation"
 
+        # Step 5: Deception response (if enabled and malicious)
+        deception_response = None
+        if self.deception_responder and verdict in ("MALICIOUS", "SAFE_REVIEW"):
+            attack_patterns = updated_session.get("attack_patterns", [])
+            deception_response = self.deception_responder.generate(
+                sanitized_input, verdict=verdict, attack_patterns=attack_patterns
+            )
+
+        # Step 6: Webhook notifications
+        if self.webhook_manager:
+            event_type = "malicious" if verdict == "MALICIOUS" else (
+                "escalation" if updated_session.get("escalated") else None
+            )
+            if event_type:
+                self.webhook_manager.notify(event_type, {
+                    "verdict": verdict,
+                    "session_id": session_id,
+                    "source_ip": source_ip,
+                    "detection_method": detection_method,
+                    "ml_score": ml_result.get("score") if ml_result else None,
+                    "user_input": sanitized_input[:200],
+                })
+
         return ShieldResult(
             verdict=verdict,
             ml_result=ml_result,
@@ -163,6 +229,7 @@ class Shield:
             sanitizations=sanitizations,
             session=updated_session,
             detection_method=detection_method,
+            deception_response=deception_response,
         )
 
     def check_rate_limit(self, ip):
@@ -175,9 +242,12 @@ def create_shield_blueprint(shield=None):
     Create a Flask Blueprint that exposes the Shield as an API proxy.
 
     Endpoints:
-        POST /analyze   - Analyze a message
-        GET  /health    - Health check
-        GET  /sessions  - List sessions
+        POST /analyze     - Analyze a message
+        GET  /health      - Health check
+        GET  /sessions    - List sessions
+        GET  /dashboard   - HTML dashboard
+        GET  /openapi.json - OpenAPI spec
+        GET  /docs        - Swagger UI
 
     Args:
         shield: Shield instance (creates default if None)
@@ -271,6 +341,17 @@ def create_shield_blueprint(shield=None):
             session_ttl=shield_config.SESSION_TTL_SECONDS,
             session_max=shield_config.SESSION_MAX_COUNT,
         )
+
+    @bp.route("/openapi.json")
+    def openapi_json():
+        from .openapi import OPENAPI_SPEC
+        return jsonify(OPENAPI_SPEC)
+
+    @bp.route("/docs")
+    def swagger_ui():
+        from flask import Response
+        from .openapi import SWAGGER_UI_HTML
+        return Response(SWAGGER_UI_HTML, mimetype="text/html")
 
     return bp
 

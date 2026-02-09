@@ -52,6 +52,7 @@ SIG_SESSION_ESCALATION = "200"
 SIG_HONEY_TOKEN = "300"
 SIG_RATE_LIMIT = "400"
 SIG_SANITIZATION = "500"
+SIG_DECEPTION = "600"
 
 # Signature name lookup
 _SIG_NAMES = {
@@ -64,6 +65,7 @@ _SIG_NAMES = {
     SIG_HONEY_TOKEN: "Honey Token Triggered",
     SIG_RATE_LIMIT: "Rate Limit Exceeded",
     SIG_SANITIZATION: "Input Sanitized",
+    SIG_DECEPTION: "Deception Response Sent",
 }
 
 
@@ -287,5 +289,21 @@ class CEFLogger:
         }
         cef_line = self._build_cef_line(
             SIG_RATE_LIMIT, "Rate Limit Exceeded", 4, extensions
+        )
+        self._emit(cef_line)
+
+    def log_deception(self, session_id, source_ip, deception_mode, verdict):
+        """Log a deception response event."""
+        extensions = {
+            "src": source_ip,
+            "cs1": session_id,
+            "cs1Label": "SessionID",
+            "cs2": deception_mode,
+            "cs2Label": "DeceptionMode",
+            "act": verdict,
+            "msg": f"Deception response sent ({deception_mode} mode)",
+        }
+        cef_line = self._build_cef_line(
+            SIG_DECEPTION, "Deception Response Sent", 6, extensions
         )
         self._emit(cef_line)

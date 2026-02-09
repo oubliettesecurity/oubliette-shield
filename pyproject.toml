@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oubliette-shield"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI LLM Firewall - Protect LLM applications from prompt injection, jailbreak, and adversarial attacks"
 readme = "README.md"
 license = "Apache-2.0"
@@ -61,12 +61,27 @@ vertex = [
 gemini = [
     "google-generativeai>=0.8.0",
 ]
+ml = [
+    "scikit-learn>=1.3.0",
+    "joblib>=1.3.0",
+]
+fastapi = [
+    "fastapi>=0.100.0",
+]
+langchain = [
+    "langchain-core>=0.1.0",
+]
+llamaindex = [
+    "llama-index-core>=0.10.0",
+]
 all = [
     "flask>=2.3.0",
     "ollama>=0.1.0",
     "openai>=1.0.0",
     "anthropic>=0.40.0",
     "google-generativeai>=0.8.0",
+    "scikit-learn>=1.3.0",
+    "joblib>=1.3.0",
 ]
 dev = [
     "pytest>=7.0",
@@ -84,7 +99,7 @@ include = ["oubliette_shield*"]
 exclude = ["tests*", "test_*", "anomaly-detection*", "AI-CTF*", "threat_intel*"]
 
 [tool.setuptools.package-data]
-oubliette_shield = ["py.typed"]
+oubliette_shield = ["py.typed", "models/*.pkl", "compliance/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

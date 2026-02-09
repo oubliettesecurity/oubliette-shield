@@ -14,16 +14,30 @@ from .pattern_detector import detect_attack_patterns
 class SessionManager:
     """
     Manages session state for multi-turn attack detection.
-    Thread-safe with RLock.
+    Thread-safe with RLock. Supports pluggable storage backends.
     """
 
-    def __init__(self, ttl=None, max_count=None, cleanup_interval=None):
+    def __init__(self, ttl=None, max_count=None, cleanup_interval=None, storage=None):
         self.ttl = ttl or config.SESSION_TTL_SECONDS
         self.max_count = max_count or config.SESSION_MAX_COUNT
         self.cleanup_interval = cleanup_interval or config.SESSION_CLEANUP_INTERVAL
+        self._cleanup_thread = None
+
+        if storage is not None:
+            self.storage = storage
+        else:
+            backend = getattr(config, "STORAGE_BACKEND", "memory")
+            if backend == "sqlite":
+                from .storage import SQLiteStorage
+                db_path = getattr(config, "DB_PATH", "oubliette_shield.db")
+                self.storage = SQLiteStorage(db_path=db_path)
+            else:
+                from .storage import MemoryStorage
+                self.storage = MemoryStorage()
+
+        # Keep backward-compat internal dict reference for direct dict access
         self._sessions = {}
         self._lock = threading.RLock()
-        self._cleanup_thread = None
 
     def start_cleanup(self):
         """Start background session cleanup thread."""
@@ -39,36 +53,25 @@ class SessionManager:
 
     def cleanup_expired(self):
         """Remove expired sessions."""
-        with self._lock:
-            now = datetime.datetime.now()
-            expired = [
-                sid for sid, s in self._sessions.items()
-                if (now - s.get("last_activity", now)).total_seconds() > self.ttl
-            ]
-            for sid in expired:
-                del self._sessions[sid]
-            if expired:
-                print(f"[SHIELD-SESSION] Cleaned up {len(expired)} expired. Active: {len(self._sessions)}")
+        removed = self.storage.cleanup_expired(self.ttl)
+        if removed:
+            print(f"[SHIELD-SESSION] Cleaned up {removed} expired. Active: {self.storage.count_active()}")
 
     def get(self, session_id):
         """Get session state (read-only copy)."""
-        with self._lock:
-            return dict(self._sessions.get(session_id, {}))
+        return self.storage.get_session(session_id)
 
     def get_all(self):
         """Get all sessions (read-only snapshot)."""
-        with self._lock:
-            return {sid: dict(s) for sid, s in self._sessions.items()}
+        return self.storage.list_sessions()
 
     @property
     def active_count(self):
-        with self._lock:
-            return len(self._sessions)
+        return self.storage.count_active()
 
     @property
     def escalated_count(self):
-        with self._lock:
-            return sum(1 for s in self._sessions.values() if s.get("escalated"))
+        return self.storage.count_escalated()
 
     def update(self, session_id, user_input, verdict, ml_result, source_ip, sanitizations=None):
         """
@@ -78,17 +81,18 @@ class SessionManager:
             dict: Updated session state
         """
         now = datetime.datetime.now()
-        with self._lock:
-            return self._update_locked(
-                session_id, user_input, verdict, ml_result, source_ip, now, sanitizations
-            )
+        return self._update_impl(
+            session_id, user_input, verdict, ml_result, source_ip, now, sanitizations
+        )
 
-    def _update_locked(self, session_id, user_input, verdict, ml_result, source_ip, now, sanitizations=None):
-        """Inner update with lock held."""
-        if session_id not in self._sessions:
-            if len(self._sessions) >= self.max_count:
-                return self._sessions.get(session_id, {})
-            self._sessions[session_id] = {
+    def _update_impl(self, session_id, user_input, verdict, ml_result, source_ip, now, sanitizations=None):
+        """Update session and persist to storage."""
+        session = self.storage.get_session(session_id)
+
+        if not session:
+            if self.storage.session_count() >= self.max_count:
+                return {}
+            session = {
                 "interactions": [],
                 "cumulative_risk_score": 0.0,
                 "threat_count": 0,
@@ -108,8 +112,6 @@ class SessionManager:
                 "sanitization_events": 0,
                 "sanitization_types": [],
             }
-
-        session = self._sessions[session_id]
 
         # Detect multi-turn attack patterns
         attack_patterns_detected = detect_attack_patterns(user_input, session)
@@ -195,4 +197,8 @@ class SessionManager:
             print(f"[SHIELD-SESSION] Session {session_id[:8]} escalated: {session['escalation_reason']}")
 
         session["last_activity"] = now
+
+        # Persist to storage backend
+        self.storage.put_session(session_id, session)
+
         return dict(session)

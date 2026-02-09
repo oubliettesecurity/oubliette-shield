@@ -248,3 +248,19 @@ REFUSAL_PATTERNS = [
     "NOT SHARE", "NOT DISCLOSE", "CANNOT PROVIDE", "CANNOT REVEAL",
     "CANNOT SHARE", "CANNOT DISCLOSE", "REFUSE TO", "UNABLE TO PROVIDE",
 ]
+
+# --- ML Backend ---
+ML_BACKEND = os.getenv("SHIELD_ML_BACKEND", "local")  # "local" or "api"
+
+# --- Storage Backend ---
+STORAGE_BACKEND = os.getenv("SHIELD_STORAGE_BACKEND", "memory")  # "memory" or "sqlite"
+DB_PATH = os.getenv("SHIELD_DB_PATH", "oubliette_shield.db")
+
+# --- Deception ---
+DECEPTION_ENABLED = os.getenv("SHIELD_DECEPTION_ENABLED", "false").lower() == "true"
+DECEPTION_MODE = os.getenv("SHIELD_DECEPTION_MODE", "honeypot")  # honeypot, tarpit, redirect
+
+# --- Webhooks ---
+WEBHOOK_URLS = os.getenv("SHIELD_WEBHOOK_URLS", "")
+WEBHOOK_EVENTS = os.getenv("SHIELD_WEBHOOK_EVENTS", "malicious,escalation")
+WEBHOOK_TIMEOUT = int(os.getenv("SHIELD_WEBHOOK_TIMEOUT", "5"))
