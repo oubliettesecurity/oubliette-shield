@@ -17,7 +17,7 @@ Usage with Flask:
     app.register_blueprint(create_shield_blueprint(shield), url_prefix='/shield')
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .sanitizer import sanitize_input
 from .pattern_detector import detect_attack_patterns

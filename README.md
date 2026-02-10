@@ -1,5 +1,10 @@
 # Oubliette Shield
 
+[![CI](https://github.com/oubliettesecurity/oubliette-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/oubliettesecurity/oubliette-shield/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/oubliette-shield)](https://pypi.org/project/oubliette-shield/)
+[![Python](https://img.shields.io/pypi/pyversions/oubliette-shield)](https://pypi.org/project/oubliette-shield/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 **AI LLM Firewall** -- Protect LLM applications from prompt injection, jailbreak, and adversarial attacks.
 
 Oubliette Shield is a standalone detection pipeline that sits in front of your LLM and blocks malicious inputs before they reach the model. Unlike other tools that simply block attacks, Oubliette Shield can **actively deceive attackers** with honeypot responses, tarpits, and redirects -- turning your defense into an intelligence-gathering operation.
