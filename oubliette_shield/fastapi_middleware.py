@@ -21,6 +21,7 @@ Usage:
         return {"response": "ok", "shield": analysis}
 """
 
+import asyncio
 import json
 
 
@@ -90,8 +91,10 @@ class ShieldMiddleware:
         client = scope.get("client")
         source_ip = client[0] if client else "127.0.0.1"
 
-        result = self.shield.analyze(user_message, session_id=session_id,
-                                     source_ip=source_ip)
+        result = await asyncio.to_thread(
+            self.shield.analyze, user_message,
+            session_id=session_id, source_ip=source_ip,
+        )
 
         if result.blocked:
             # Block the request
@@ -172,8 +175,10 @@ def shield_dependency(shield=None, message_field="message",
         session_id = body.get(session_field, "default")
         source_ip = request.client.host if request.client else "127.0.0.1"
 
-        result = _shield.analyze(user_message, session_id=session_id,
-                                 source_ip=source_ip)
+        result = await asyncio.to_thread(
+            _shield.analyze, user_message,
+            session_id=session_id, source_ip=source_ip,
+        )
 
         if block and result.blocked:
             try:
