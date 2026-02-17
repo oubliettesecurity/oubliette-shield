@@ -1,6 +1,6 @@
 """
 Oubliette Shield - ML Anomaly Detection Client
-Supports local inference (default) and external API backends.
+Calls the Anomaly Detection API for ML-based scoring.
 """
 
 import datetime
@@ -12,30 +12,13 @@ from . import config
 
 class MLClient:
     """
-    Client for ML-based scoring.
-
-    Supports two backends:
-    - "local" (default): Bundled scikit-learn model, no external service needed
-    - "api": External Anomaly Detection API
-
-    The backend is selected via SHIELD_ML_BACKEND env var or the backend parameter.
+    Client for the Anomaly Detection API.
+    Returns None on failure for graceful degradation to LLM-only mode.
     """
 
-    def __init__(self, api_url=None, timeout=None, backend=None):
-        self.backend = backend or config.ML_BACKEND
+    def __init__(self, api_url=None, timeout=None):
         self.api_url = api_url or config.ANOMALY_API_URL
         self.timeout = timeout or config.ANOMALY_API_TIMEOUT
-        self._local_client = None
-
-    def _get_local_client(self):
-        if self._local_client is None:
-            try:
-                from .models.local_inference import LocalMLClient
-                self._local_client = LocalMLClient()
-            except Exception as e:
-                print(f"[SHIELD-ML] Failed to load local model: {e}")
-                self._local_client = False  # Sentinel: don't retry
-        return self._local_client
 
     def score(self, user_input, session, source_ip):
         """
@@ -49,14 +32,6 @@ class MLClient:
         Returns:
             dict with score/threat_type/severity/processing_time_ms, or None on failure
         """
-        # Use local model if configured
-        if self.backend == "local":
-            local = self._get_local_client()
-            if local:
-                return local.score(user_input, session, source_ip)
-            # Fall through to API if local model failed to load
-            print("[SHIELD-ML] Local model unavailable, falling back to API")
-
         if not self.api_url:
             return None
 

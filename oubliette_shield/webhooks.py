@@ -1,268 +1,335 @@
 """
-Oubliette Shield - Webhook Alerting
-Dispatches detection events to Slack, Teams, PagerDuty, and generic JSON endpoints.
+Webhook alerting for Oubliette Shield.
 
-Usage:
-    from oubliette_shield.webhooks import WebhookManager
+Dispatches detection and escalation events to Slack, Microsoft Teams,
+and PagerDuty.  No extra dependencies -- uses ``requests`` (already a
+core dep).
 
-    manager = WebhookManager(urls=["https://hooks.slack.com/services/..."])
-    manager.notify("malicious", {
-        "verdict": "MALICIOUS",
-        "session_id": "abc123",
-        "detection_method": "pre_filter",
-    })
+Usage::
+
+    from oubliette_shield.webhooks import WebhookManager, SlackNotifier
+
+    mgr = WebhookManager(
+        notifiers=[SlackNotifier("https://hooks.slack.com/services/...")],
+        severity_threshold="medium",
+    )
+    shield = Shield(webhook_manager=mgr)
 """
 
-import os
+from __future__ import annotations
+
+import hashlib
 import json
-import time
+import logging
 import threading
-import datetime
+import time
+from typing import Any, Dict, List, Optional
 
 import requests
 
+log = logging.getLogger(__name__)
 
-class WebhookManager:
-    """
-    Dispatches detection events to configured webhook URLs.
+# ---- severity helpers ----
 
-    Auto-detects the payload format from the URL:
-    - slack.com -> Slack Block Kit
-    - office.com / webhook.office -> Microsoft Teams Adaptive Card
-    - pagerduty.com -> PagerDuty Events API v2
-    - Everything else -> Generic JSON POST
+_SEVERITY_LEVELS = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
-    Args:
-        urls: List of webhook URLs (or comma-separated string)
-        events: Event types to dispatch (default: malicious, escalation)
-        timeout: HTTP timeout in seconds (default: 5)
-        max_retries: Max retry attempts on failure (default: 1)
-    """
 
-    def __init__(self, urls=None, events=None, timeout=5, max_retries=1):
-        raw_urls = urls or os.getenv("SHIELD_WEBHOOK_URLS", "")
-        if isinstance(raw_urls, str):
-            self.urls = [u.strip() for u in raw_urls.split(",") if u.strip()]
-        else:
-            self.urls = list(raw_urls)
+def determine_severity(result_dict: Dict[str, Any]) -> str:
+    """Map a ShieldResult dict to a severity string."""
+    ml_score = result_dict.get("ml_score") or 0
+    escalated = result_dict.get("session_escalated", False)
+    method = result_dict.get("detection_method", "")
 
-        raw_events = events or os.getenv("SHIELD_WEBHOOK_EVENTS", "malicious,escalation")
-        if isinstance(raw_events, str):
-            self.events = {e.strip() for e in raw_events.split(",") if e.strip()}
-        else:
-            self.events = set(raw_events)
+    if escalated or ml_score >= 0.95:
+        return "critical"
+    if ml_score >= 0.80 or method == "pre_filter":
+        return "high"
+    if ml_score >= 0.50:
+        return "medium"
+    return "low"
 
-        self.timeout = int(os.getenv("SHIELD_WEBHOOK_TIMEOUT", str(timeout)))
-        self.max_retries = max_retries
 
-    def notify(self, event_type, payload):
-        """
-        Dispatch an event to all configured webhook URLs.
+# ---- base class ----
 
-        Args:
-            event_type: Event type string (e.g., "malicious", "escalation")
-            payload: dict with event data
-        """
-        if not self.urls:
-            return
+class WebhookNotifier:
+    """Base notifier -- subclasses implement ``notify()``."""
 
-        if event_type not in self.events:
-            return
+    def notify(self, event: Dict[str, Any]) -> bool:
+        """Send *event* to the external service.  Return True on success."""
+        raise NotImplementedError
 
-        for url in self.urls:
-            thread = threading.Thread(
-                target=self._dispatch,
-                args=(url, event_type, payload),
-                daemon=True,
-            )
-            thread.start()
 
-    def _dispatch(self, url, event_type, payload):
-        """Send webhook notification with retry."""
-        formatted = self._format_payload(url, event_type, payload)
+# ---- Slack ----
 
-        for attempt in range(1 + self.max_retries):
-            try:
-                response = requests.post(
-                    url,
-                    json=formatted,
-                    timeout=self.timeout,
-                    headers={"Content-Type": "application/json"},
-                )
-                if response.status_code < 300:
-                    return
-                print(
-                    f"[SHIELD-WEBHOOK] {url}: HTTP {response.status_code} "
-                    f"(attempt {attempt + 1})"
-                )
-            except requests.exceptions.Timeout:
-                print(f"[SHIELD-WEBHOOK] {url}: timeout (attempt {attempt + 1})")
-            except Exception as e:
-                print(f"[SHIELD-WEBHOOK] {url}: error: {e} (attempt {attempt + 1})")
+class SlackNotifier(WebhookNotifier):
+    """Post Block Kit messages to a Slack Incoming Webhook URL."""
 
-            if attempt < self.max_retries:
-                time.sleep(2 ** attempt)  # Exponential backoff
+    def __init__(self, webhook_url: str, channel: Optional[str] = None):
+        self.webhook_url = webhook_url
+        self.channel = channel
 
-    def _format_payload(self, url, event_type, payload):
-        """Auto-detect format from URL and build appropriate payload."""
-        url_lower = url.lower()
-        if "hooks.slack.com" in url_lower or "slack.com" in url_lower:
-            return self._format_slack(event_type, payload)
-        elif "office.com" in url_lower or "webhook.office" in url_lower:
-            return self._format_teams(event_type, payload)
-        elif "pagerduty.com" in url_lower:
-            return self._format_pagerduty(event_type, payload)
-        else:
-            return self._format_generic(event_type, payload)
+    def notify(self, event: Dict[str, Any]) -> bool:
+        severity = event.get("severity", "unknown")
+        verdict = event.get("verdict", "UNKNOWN")
+        event_type = event.get("event_type", "detection")
+        session_id = event.get("session_id", "n/a")
+        source_ip = event.get("source_ip", "n/a")
+        method = event.get("detection_method", "n/a")
+        ml_score = event.get("ml_score")
+        preview = event.get("message_preview", "")[:120]
+        reason = event.get("escalation_reason", "")
 
-    def _format_slack(self, event_type, payload):
-        """Format as Slack Block Kit message."""
-        verdict = payload.get("verdict", "UNKNOWN")
-        session_id = payload.get("session_id", "")[:8]
-        method = payload.get("detection_method", "unknown")
-        ml_score = payload.get("ml_score")
-        timestamp = payload.get("timestamp") or datetime.datetime.now().isoformat()
+        color = {"critical": "#FF0000", "high": "#FF6600",
+                 "medium": "#FFCC00", "low": "#00CC00"}.get(severity, "#808080")
 
-        emoji = ":rotating_light:" if verdict == "MALICIOUS" else ":warning:"
-        color = "#dc3545" if verdict == "MALICIOUS" else "#ffc107"
+        fields = [
+            {"type": "mrkdwn", "text": f"*Verdict:* {verdict}"},
+            {"type": "mrkdwn", "text": f"*Severity:* {severity.upper()}"},
+            {"type": "mrkdwn", "text": f"*Method:* {method}"},
+            {"type": "mrkdwn", "text": f"*Session:* `{session_id[:12]}`"},
+            {"type": "mrkdwn", "text": f"*Source IP:* {source_ip}"},
+        ]
+        if ml_score is not None:
+            fields.append({"type": "mrkdwn", "text": f"*ML Score:* {ml_score:.2f}"})
+        if reason:
+            fields.append({"type": "mrkdwn", "text": f"*Escalation:* {reason}"})
+
+        title = ("Oubliette Shield -- Escalation Alert" if event_type == "escalation"
+                 else "Oubliette Shield -- Detection Alert")
 
         blocks = [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": f"{emoji} Oubliette Shield Alert",
-                },
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Event:* {event_type}"},
-                    {"type": "mrkdwn", "text": f"*Verdict:* {verdict}"},
-                    {"type": "mrkdwn", "text": f"*Method:* {method}"},
-                    {"type": "mrkdwn", "text": f"*Session:* {session_id}..."},
-                ],
-            },
+            {"type": "header", "text": {"type": "plain_text", "text": title}},
+            {"type": "section", "fields": fields},
         ]
+        if preview:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn",
+                         "text": f"*Preview:* ```{preview}```"},
+            })
 
+        payload: Dict[str, Any] = {"blocks": blocks}
+        if self.channel:
+            payload["channel"] = self.channel
+
+        # Slack also supports top-level "attachments" for the colour bar
+        payload["attachments"] = [{"color": color, "blocks": []}]
+
+        try:
+            r = requests.post(self.webhook_url, json=payload, timeout=10)
+            r.raise_for_status()
+            return True
+        except Exception:
+            log.exception("Slack webhook failed")
+            return False
+
+
+# ---- Microsoft Teams ----
+
+class TeamsNotifier(WebhookNotifier):
+    """Post Adaptive Card messages to a Teams Incoming Webhook."""
+
+    def __init__(self, webhook_url: str):
+        self.webhook_url = webhook_url
+
+    def notify(self, event: Dict[str, Any]) -> bool:
+        severity = event.get("severity", "unknown")
+        verdict = event.get("verdict", "UNKNOWN")
+        event_type = event.get("event_type", "detection")
+        session_id = event.get("session_id", "n/a")
+        source_ip = event.get("source_ip", "n/a")
+        method = event.get("detection_method", "n/a")
+        ml_score = event.get("ml_score")
+        preview = event.get("message_preview", "")[:120]
+        reason = event.get("escalation_reason", "")
+
+        accent = {"critical": "attention", "high": "warning",
+                  "medium": "accent", "low": "good"}.get(severity, "default")
+
+        title = ("Escalation Alert" if event_type == "escalation"
+                 else "Detection Alert")
+
+        facts = [
+            {"title": "Verdict", "value": verdict},
+            {"title": "Severity", "value": severity.upper()},
+            {"title": "Method", "value": method},
+            {"title": "Session", "value": session_id[:12]},
+            {"title": "Source IP", "value": source_ip},
+        ]
         if ml_score is not None:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*ML Score:* {ml_score:.2f}",
-                },
-            })
+            facts.append({"title": "ML Score", "value": f"{ml_score:.2f}"})
+        if reason:
+            facts.append({"title": "Escalation", "value": reason})
 
-        user_input = payload.get("user_input", "")
-        if user_input:
-            truncated = user_input[:200]
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Input:* ```{truncated}```",
-                },
-            })
-
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": f"Timestamp: {timestamp}"},
-            ],
-        })
-
-        return {"blocks": blocks}
-
-    def _format_teams(self, event_type, payload):
-        """Format as Microsoft Teams Adaptive Card."""
-        verdict = payload.get("verdict", "UNKNOWN")
-        session_id = payload.get("session_id", "")[:8]
-        method = payload.get("detection_method", "unknown")
-        ml_score = payload.get("ml_score")
-        user_input = payload.get("user_input", "")[:200]
+        body: list = [
+            {"type": "TextBlock", "text": f"Oubliette Shield -- {title}",
+             "weight": "bolder", "size": "medium", "color": accent},
+            {"type": "FactSet", "facts": facts},
+        ]
+        if preview:
+            body.append({"type": "TextBlock", "text": f"Preview: {preview}",
+                         "wrap": True, "isSubtle": True})
 
         card = {
             "type": "message",
-            "attachments": [
-                {
-                    "contentType": "application/vnd.microsoft.card.adaptive",
-                    "content": {
-                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                        "type": "AdaptiveCard",
-                        "version": "1.4",
-                        "body": [
-                            {
-                                "type": "TextBlock",
-                                "text": "Oubliette Shield Alert",
-                                "weight": "bolder",
-                                "size": "large",
-                                "color": "attention",
-                            },
-                            {
-                                "type": "FactSet",
-                                "facts": [
-                                    {"title": "Event", "value": event_type},
-                                    {"title": "Verdict", "value": verdict},
-                                    {"title": "Method", "value": method},
-                                    {"title": "Session", "value": f"{session_id}..."},
-                                ],
-                            },
-                        ],
-                    },
-                }
-            ],
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": body,
+                },
+            }],
         }
 
-        body = card["attachments"][0]["content"]["body"]
+        try:
+            r = requests.post(self.webhook_url, json=card, timeout=10)
+            r.raise_for_status()
+            return True
+        except Exception:
+            log.exception("Teams webhook failed")
+            return False
 
-        if ml_score is not None:
-            body[1]["facts"].append(
-                {"title": "ML Score", "value": f"{ml_score:.2f}"}
-            )
 
-        if user_input:
-            body.append({
-                "type": "TextBlock",
-                "text": f"Input: {user_input}",
-                "wrap": True,
-                "size": "small",
-            })
+# ---- PagerDuty ----
 
-        return card
+class PagerDutyNotifier(WebhookNotifier):
+    """Send events via the PagerDuty Events API v2."""
 
-    def _format_pagerduty(self, event_type, payload):
-        """Format as PagerDuty Events API v2 payload."""
-        verdict = payload.get("verdict", "UNKNOWN")
-        session_id = payload.get("session_id", "default")
-        method = payload.get("detection_method", "unknown")
+    EVENTS_URL = "https://events.pagerduty.com/v2/enqueue"
 
-        severity = "critical" if verdict == "MALICIOUS" else "warning"
+    def __init__(self, routing_key: str):
+        self.routing_key = routing_key
 
-        return {
-            "routing_key": os.getenv("PAGERDUTY_ROUTING_KEY", ""),
+    def notify(self, event: Dict[str, Any]) -> bool:
+        severity = event.get("severity", "warning")
+        pd_severity = {"critical": "critical", "high": "error",
+                       "medium": "warning", "low": "info"}.get(severity, "warning")
+
+        session_id = event.get("session_id", "unknown")
+        event_type = event.get("event_type", "detection")
+        # Dedup key: same session + event_type = same incident
+        dedup = hashlib.sha256(
+            f"{session_id}:{event_type}".encode()
+        ).hexdigest()[:32]
+
+        payload = {
+            "routing_key": self.routing_key,
             "event_action": "trigger",
-            "dedup_key": f"oubliette-{session_id}-{event_type}",
+            "dedup_key": dedup,
             "payload": {
-                "summary": f"Oubliette Shield: {event_type} - {verdict}",
-                "source": "oubliette-shield",
-                "severity": severity,
-                "component": "llm-firewall",
+                "summary": (f"Oubliette Shield {event_type}: "
+                            f"{event.get('verdict', 'UNKNOWN')} from "
+                            f"{event.get('source_ip', 'n/a')}"),
+                "severity": pd_severity,
+                "source": f"oubliette-shield:{session_id[:12]}",
                 "custom_details": {
-                    "verdict": verdict,
-                    "detection_method": method,
-                    "session_id": session_id,
-                    "ml_score": payload.get("ml_score"),
-                    "user_input": payload.get("user_input", "")[:200],
+                    k: v for k, v in event.items()
+                    if k not in ("routing_key",)
                 },
             },
         }
 
-    def _format_generic(self, event_type, payload):
-        """Format as generic JSON payload."""
-        return {
-            "source": "oubliette-shield",
-            "event_type": event_type,
-            "timestamp": datetime.datetime.now().isoformat(),
-            "data": payload,
-        }
+        try:
+            r = requests.post(self.EVENTS_URL, json=payload, timeout=10)
+            r.raise_for_status()
+            return True
+        except Exception:
+            log.exception("PagerDuty webhook failed")
+            return False
+
+
+# ---- WebhookManager ----
+
+class WebhookManager:
+    """Dispatch events to multiple notifiers in daemon threads.
+
+    Args:
+        notifiers: List of WebhookNotifier instances.
+        severity_threshold: Minimum severity to fire (low/medium/high/critical).
+        max_concurrent: Semaphore limit for outbound webhook calls.
+    """
+
+    def __init__(
+        self,
+        notifiers: Optional[List[WebhookNotifier]] = None,
+        severity_threshold: str = "high",
+        max_concurrent: int = 4,
+    ):
+        self.notifiers: List[WebhookNotifier] = notifiers or []
+        self.severity_threshold = severity_threshold
+        self._semaphore = threading.Semaphore(max_concurrent)
+
+    def _should_notify(self, severity: str) -> bool:
+        threshold = _SEVERITY_LEVELS.get(self.severity_threshold, 2)
+        actual = _SEVERITY_LEVELS.get(severity, 0)
+        return actual >= threshold
+
+    def _dispatch(self, event: Dict[str, Any]) -> None:
+        """Fire each notifier in its own daemon thread."""
+        for notifier in self.notifiers:
+            t = threading.Thread(
+                target=self._safe_notify,
+                args=(notifier, event),
+                daemon=True,
+            )
+            t.start()
+
+    def _safe_notify(self, notifier: WebhookNotifier,
+                     event: Dict[str, Any]) -> None:
+        self._semaphore.acquire()
+        try:
+            notifier.notify(event)
+        except Exception:
+            log.exception("Notifier %s failed", type(notifier).__name__)
+        finally:
+            self._semaphore.release()
+
+    def _build_event(self, event_type: str, **kwargs) -> Dict[str, Any]:
+        event = {"event_type": event_type, "timestamp": time.time()}
+        event.update(kwargs)
+        return event
+
+    def notify_detection(
+        self,
+        result_dict: Dict[str, Any],
+        session_id: str = "",
+        source_ip: str = "",
+        user_input: str = "",
+    ) -> None:
+        """Called by Shield after a MALICIOUS / SAFE_REVIEW verdict."""
+        severity = determine_severity(result_dict)
+        if not self._should_notify(severity):
+            return
+
+        event = self._build_event(
+            event_type="detection",
+            verdict=result_dict.get("verdict", "UNKNOWN"),
+            severity=severity,
+            session_id=session_id,
+            source_ip=source_ip,
+            detection_method=result_dict.get("detection_method", ""),
+            ml_score=result_dict.get("ml_score"),
+            message_preview=user_input[:200] if user_input else "",
+        )
+        self._dispatch(event)
+
+    def notify_escalation(
+        self,
+        session_id: str,
+        source_ip: str,
+        reason: str,
+        threat_count: int = 0,
+    ) -> None:
+        """Called when a session flips to escalated."""
+        event = self._build_event(
+            event_type="escalation",
+            severity="critical",
+            session_id=session_id,
+            source_ip=source_ip,
+            escalation_reason=reason,
+            threat_count=threat_count,
+            verdict="ESCALATED",
+        )
+        self._dispatch(event)

@@ -5,6 +5,12 @@ Centralizes all detection thresholds, patterns, and settings.
 
 import os
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # --- Detection Thresholds ---
 ML_HIGH_THRESHOLD = float(os.getenv("SHIELD_ML_HIGH", "0.85"))
 ML_LOW_THRESHOLD = float(os.getenv("SHIELD_ML_LOW", "0.30"))
@@ -249,18 +255,30 @@ REFUSAL_PATTERNS = [
     "CANNOT SHARE", "CANNOT DISCLOSE", "REFUSE TO", "UNABLE TO PROVIDE",
 ]
 
-# --- ML Backend ---
-ML_BACKEND = os.getenv("SHIELD_ML_BACKEND", "local")  # "local" or "api"
+# --- Scanner Configuration ---
 
-# --- Storage Backend ---
-STORAGE_BACKEND = os.getenv("SHIELD_STORAGE_BACKEND", "memory")  # "memory" or "sqlite"
-DB_PATH = os.getenv("SHIELD_DB_PATH", "oubliette_shield.db")
+# Secrets scanner
+SECRETS_SCAN_ENABLED = True
 
-# --- Deception ---
-DECEPTION_ENABLED = os.getenv("SHIELD_DECEPTION_ENABLED", "false").lower() == "true"
-DECEPTION_MODE = os.getenv("SHIELD_DECEPTION_MODE", "honeypot")  # honeypot, tarpit, redirect
+# PII scanner
+PII_SCAN_ENABLED = True
 
-# --- Webhooks ---
-WEBHOOK_URLS = os.getenv("SHIELD_WEBHOOK_URLS", "")
-WEBHOOK_EVENTS = os.getenv("SHIELD_WEBHOOK_EVENTS", "malicious,escalation")
-WEBHOOK_TIMEOUT = int(os.getenv("SHIELD_WEBHOOK_TIMEOUT", "5"))
+# Language scanner
+ALLOWED_LANGUAGES = None  # Set to e.g. {"latin", "cyrillic"} to restrict
+
+# Gibberish scanner
+GIBBERISH_THRESHOLD_HIGH = 0.7
+GIBBERISH_THRESHOLD_MEDIUM = 0.5
+GIBBERISH_MIN_LENGTH = 20
+
+# URL scanner
+SUSPICIOUS_TLDS = {".tk", ".ml", ".ga", ".cf", ".gq", ".xyz", ".top", ".buzz", ".rest", ".work"}
+URL_SHORTENERS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "rb.gy"}
+
+# Output scanner
+OUTPUT_BLOCK_ON = {"critical"}
+
+# --- Drift Monitor ---
+DRIFT_WINDOW_SIZE = int(os.getenv("SHIELD_DRIFT_WINDOW", "1000"))
+DRIFT_REFERENCE_PATH = os.getenv("SHIELD_DRIFT_REF_PATH", "")
+DRIFT_ENABLED = os.getenv("SHIELD_DRIFT_ENABLED", "true").lower() in ("true", "1", "yes")

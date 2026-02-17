@@ -1,264 +1,356 @@
 """
 Oubliette Shield - Storage Backends
-Abstract storage for sessions with Memory (default) and SQLite backends.
+Abstract storage interface with Memory and SQLite implementations.
+
+Provides persistent storage for sessions, detection events, and IOCs.
+
+Usage::
+
+    from oubliette_shield.storage import create_backend
+
+    # Auto-detect from environment variables
+    backend = create_backend()
+
+    # Or explicit SQLite
+    backend = SQLiteBackend("shield.db")
+    backend.save_session("sess-1", {"threat_count": 3, "escalated": True})
+    session = backend.load_session("sess-1")
 """
 
-import abc
+from __future__ import annotations
+
 import json
+import os
 import sqlite3
-import datetime
 import threading
+import time
+from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 
-class StorageBackend(abc.ABC):
-    """Abstract base class for session storage."""
-
-    @abc.abstractmethod
-    def get_session(self, session_id):
-        """Get session data by ID. Returns dict or empty dict if not found."""
-
-    @abc.abstractmethod
-    def put_session(self, session_id, session_data):
-        """Store session data."""
-
-    @abc.abstractmethod
-    def delete_session(self, session_id):
-        """Delete a session."""
-
-    @abc.abstractmethod
-    def list_sessions(self):
-        """Return dict of all sessions {session_id: session_data}."""
-
-    @abc.abstractmethod
-    def count_active(self):
-        """Return count of active sessions."""
-
-    @abc.abstractmethod
-    def count_escalated(self):
-        """Return count of escalated sessions."""
-
-    @abc.abstractmethod
-    def cleanup_expired(self, ttl_seconds):
-        """Remove sessions older than ttl_seconds. Returns count removed."""
-
-    @abc.abstractmethod
-    def session_count(self):
-        """Return total number of sessions."""
+def _make_serializable(obj: Any) -> Any:
+    """Convert datetime and other non-JSON types to strings."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, set):
+        return sorted(obj)
+    return obj
 
 
-class MemoryStorage(StorageBackend):
-    """In-memory session storage (default). Data lost on restart."""
+def _serialize_session(data: Dict[str, Any]) -> str:
+    """Serialize a session dict to JSON."""
+    clean = {}
+    for k, v in data.items():
+        clean[k] = _make_serializable(v)
+    return json.dumps(clean, default=str)
+
+
+# ---- Abstract Backend ----
+
+
+class StorageBackend(ABC):
+    """Abstract interface for Shield storage."""
+
+    # -- Sessions --
+
+    @abstractmethod
+    def save_session(self, session_id: str, data: Dict[str, Any]) -> None:
+        """Persist session state."""
+
+    @abstractmethod
+    def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load session state.  Returns None if not found."""
+
+    @abstractmethod
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session.  Returns True if deleted."""
+
+    @abstractmethod
+    def list_sessions(self) -> Dict[str, Dict[str, Any]]:
+        """Return all sessions as {session_id: data}."""
+
+    # -- Detection events --
+
+    @abstractmethod
+    def log_detection(self, event: Dict[str, Any]) -> None:
+        """Store a detection event."""
+
+    @abstractmethod
+    def query_detections(
+        self,
+        verdict: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Query detection events with optional filters."""
+
+    # -- IOCs --
+
+    @abstractmethod
+    def save_ioc(self, ioc: Dict[str, Any]) -> None:
+        """Store or update an IOC (deduplicated by payload_hash)."""
+
+    @abstractmethod
+    def query_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Query stored IOCs."""
+
+
+# ---- Memory Backend ----
+
+
+class MemoryBackend(StorageBackend):
+    """In-memory storage (no persistence across restarts).
+
+    Thread-safe.  This is the default when no backend is configured.
+    """
 
     def __init__(self):
-        self._sessions = {}
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._detections: List[Dict[str, Any]] = []
+        self._iocs: Dict[str, Dict[str, Any]] = {}  # payload_hash -> ioc
         self._lock = threading.RLock()
 
-    def get_session(self, session_id):
+    def save_session(self, session_id: str, data: Dict[str, Any]) -> None:
         with self._lock:
-            return dict(self._sessions.get(session_id, {}))
+            self._sessions[session_id] = dict(data)
 
-    def put_session(self, session_id, session_data):
+    def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
-            self._sessions[session_id] = session_data
+            s = self._sessions.get(session_id)
+            return dict(s) if s else None
 
-    def delete_session(self, session_id):
+    def delete_session(self, session_id: str) -> bool:
         with self._lock:
-            self._sessions.pop(session_id, None)
+            return self._sessions.pop(session_id, None) is not None
 
-    def list_sessions(self):
+    def list_sessions(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             return {sid: dict(s) for sid, s in self._sessions.items()}
 
-    def count_active(self):
+    def log_detection(self, event: Dict[str, Any]) -> None:
         with self._lock:
-            return len(self._sessions)
+            self._detections.append(dict(event))
 
-    def count_escalated(self):
+    def query_detections(
+        self,
+        verdict: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
         with self._lock:
-            return sum(1 for s in self._sessions.values() if s.get("escalated"))
+            results = list(reversed(self._detections))
+            if verdict:
+                results = [e for e in results if e.get("verdict") == verdict]
+            if session_id:
+                results = [e for e in results if e.get("session_id") == session_id]
+            return results[:limit]
 
-    def cleanup_expired(self, ttl_seconds):
+    def save_ioc(self, ioc: Dict[str, Any]) -> None:
         with self._lock:
-            now = datetime.datetime.now()
-            expired = [
-                sid for sid, s in self._sessions.items()
-                if (now - s.get("last_activity", now)).total_seconds() > ttl_seconds
-            ]
-            for sid in expired:
-                del self._sessions[sid]
-            return len(expired)
+            ph = ioc.get("payload_hash", "")
+            if ph in self._iocs:
+                existing = self._iocs[ph]
+                existing["sighting_count"] = existing.get("sighting_count", 1) + 1
+                existing["last_seen"] = ioc.get("last_seen", datetime.now().isoformat())
+            else:
+                self._iocs[ph] = dict(ioc)
 
-    def session_count(self):
+    def query_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
         with self._lock:
-            return len(self._sessions)
+            items = sorted(
+                self._iocs.values(),
+                key=lambda x: x.get("last_seen", ""),
+                reverse=True,
+            )
+            return items[:limit]
 
 
-class SQLiteStorage(StorageBackend):
-    """SQLite-backed persistent session storage."""
+# ---- SQLite Backend ----
 
-    def __init__(self, db_path="oubliette_shield.db"):
-        self._db_path = db_path
-        self._lock = threading.RLock()
+
+_SHIELD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS shield_sessions (
+    session_id  TEXT PRIMARY KEY,
+    data        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS shield_detections (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT NOT NULL,
+    session_id       TEXT,
+    verdict          TEXT,
+    detection_method TEXT,
+    ml_score         REAL,
+    user_input       TEXT,
+    data             TEXT DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_sd_verdict    ON shield_detections(verdict);
+CREATE INDEX IF NOT EXISTS idx_sd_session    ON shield_detections(session_id);
+CREATE INDEX IF NOT EXISTS idx_sd_ts         ON shield_detections(timestamp);
+
+CREATE TABLE IF NOT EXISTS shield_iocs (
+    payload_hash    TEXT PRIMARY KEY,
+    data            TEXT NOT NULL,
+    first_seen      TEXT NOT NULL,
+    last_seen       TEXT NOT NULL,
+    sighting_count  INTEGER DEFAULT 1
+);
+
+CREATE INDEX IF NOT EXISTS idx_si_last ON shield_iocs(last_seen);
+"""
+
+
+class SQLiteBackend(StorageBackend):
+    """SQLite-based persistent storage with WAL mode.
+
+    Thread-safe via thread-local connections.
+
+    Args:
+        db_path: Path to the SQLite database file.
+    """
+
+    def __init__(self, db_path: str = "shield.db"):
+        self.db_path = db_path
+        self._local = threading.local()
         self._init_db()
 
-    def _init_db(self):
-        """Create tables if they don't exist."""
-        with self._lock:
-            conn = sqlite3.connect(self._db_path)
-            try:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        session_id TEXT PRIMARY KEY,
-                        data TEXT NOT NULL,
-                        escalated INTEGER DEFAULT 0,
-                        threat_count INTEGER DEFAULT 0,
-                        created_at TEXT,
-                        last_activity TEXT
-                    )
-                """)
-                conn.commit()
-            finally:
-                conn.close()
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn = conn
+        return self._local.conn
 
-    def _get_conn(self):
-        return sqlite3.connect(self._db_path, check_same_thread=False)
+    def _init_db(self) -> None:
+        self._conn.executescript(_SHIELD_SCHEMA)
+        self._conn.commit()
 
-    def get_session(self, session_id):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT data FROM sessions WHERE session_id = ?",
-                    (session_id,)
-                ).fetchone()
-                if row:
-                    return json.loads(row[0])
-                return {}
-            finally:
-                conn.close()
+    def close(self) -> None:
+        if hasattr(self._local, "conn") and self._local.conn:
+            self._local.conn.close()
+            self._local.conn = None
 
-    def put_session(self, session_id, session_data):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                # Serialize datetime objects
-                data = self._serialize_session(session_data)
-                data_json = json.dumps(data)
-                escalated = 1 if session_data.get("escalated") else 0
-                threat_count = session_data.get("threat_count", 0)
-                created_at = self._dt_to_str(session_data.get("created_at"))
-                last_activity = self._dt_to_str(session_data.get("last_activity"))
+    # -- Sessions --
 
-                conn.execute("""
-                    INSERT OR REPLACE INTO sessions
-                    (session_id, data, escalated, threat_count, created_at, last_activity)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (session_id, data_json, escalated, threat_count,
-                      created_at, last_activity))
-                conn.commit()
-            finally:
-                conn.close()
+    def save_session(self, session_id: str, data: Dict[str, Any]) -> None:
+        now = datetime.now().isoformat()
+        serialized = _serialize_session(data)
+        self._conn.execute(
+            """INSERT INTO shield_sessions (session_id, data, created_at, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(session_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at""",
+            (session_id, serialized, now, now),
+        )
+        self._conn.commit()
 
-    def delete_session(self, session_id):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                conn.commit()
-            finally:
-                conn.close()
+    def load_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT data FROM shield_sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["data"])
 
-    def list_sessions(self):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                rows = conn.execute("SELECT session_id, data FROM sessions").fetchall()
-                result = {}
-                for sid, data_json in rows:
-                    data = json.loads(data_json)
-                    self._deserialize_session(data)
-                    result[sid] = data
-                return result
-            finally:
-                conn.close()
+    def delete_session(self, session_id: str) -> bool:
+        cur = self._conn.execute(
+            "DELETE FROM shield_sessions WHERE session_id = ?", (session_id,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
-    def count_active(self):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
-                return row[0] if row else 0
-            finally:
-                conn.close()
-
-    def count_escalated(self):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE escalated = 1"
-                ).fetchone()
-                return row[0] if row else 0
-            finally:
-                conn.close()
-
-    def cleanup_expired(self, ttl_seconds):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                cutoff = (
-                    datetime.datetime.now() - datetime.timedelta(seconds=ttl_seconds)
-                ).strftime("%Y-%m-%d %H:%M:%S")
-                cursor = conn.execute(
-                    "DELETE FROM sessions WHERE last_activity < ?", (cutoff,)
-                )
-                conn.commit()
-                return cursor.rowcount
-            finally:
-                conn.close()
-
-    def session_count(self):
-        return self.count_active()
-
-    @staticmethod
-    def _dt_to_str(dt):
-        if isinstance(dt, datetime.datetime):
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-        if isinstance(dt, str):
-            return dt
-        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    @staticmethod
-    def _serialize_session(data):
-        """Convert datetime objects to strings for JSON serialization."""
+    def list_sessions(self) -> Dict[str, Dict[str, Any]]:
+        rows = self._conn.execute("SELECT session_id, data FROM shield_sessions").fetchall()
         result = {}
-        for key, value in data.items():
-            if isinstance(value, datetime.datetime):
-                result[key] = value.strftime("%Y-%m-%d %H:%M:%S")
-            elif isinstance(value, list):
-                result[key] = [
-                    SQLiteStorage._serialize_item(item) for item in value
-                ]
-            else:
-                result[key] = value
+        for row in rows:
+            result[row["session_id"]] = json.loads(row["data"])
         return result
 
-    @staticmethod
-    def _serialize_item(item):
-        if isinstance(item, dict):
-            return {k: SQLiteStorage._serialize_item(v) for k, v in item.items()}
-        if isinstance(item, datetime.datetime):
-            return item.strftime("%Y-%m-%d %H:%M:%S")
-        return item
+    # -- Detection events --
 
-    @staticmethod
-    def _deserialize_session(data):
-        """Convert datetime strings back to datetime objects."""
-        for key in ("created_at", "last_activity"):
-            if key in data and isinstance(data[key], str):
-                try:
-                    data[key] = datetime.datetime.strptime(
-                        data[key], "%Y-%m-%d %H:%M:%S"
-                    )
-                except ValueError:
-                    pass
+    def log_detection(self, event: Dict[str, Any]) -> None:
+        now = event.get("timestamp", datetime.now().isoformat())
+        self._conn.execute(
+            """INSERT INTO shield_detections
+               (timestamp, session_id, verdict, detection_method, ml_score, user_input, data)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                now,
+                event.get("session_id"),
+                event.get("verdict"),
+                event.get("detection_method"),
+                event.get("ml_score"),
+                event.get("user_input"),
+                json.dumps(event, default=str),
+            ),
+        )
+        self._conn.commit()
+
+    def query_detections(
+        self,
+        verdict: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        clauses = []
+        params: list = []
+        if verdict:
+            clauses.append("verdict = ?")
+            params.append(verdict)
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT data FROM shield_detections{where} ORDER BY timestamp DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        return [json.loads(row["data"]) for row in rows]
+
+    # -- IOCs --
+
+    def save_ioc(self, ioc: Dict[str, Any]) -> None:
+        now = datetime.now().isoformat()
+        ph = ioc.get("payload_hash", "")
+        self._conn.execute(
+            """INSERT INTO shield_iocs (payload_hash, data, first_seen, last_seen, sighting_count)
+               VALUES (?, ?, ?, ?, 1)
+               ON CONFLICT(payload_hash) DO UPDATE SET
+                   last_seen = excluded.last_seen,
+                   sighting_count = shield_iocs.sighting_count + 1,
+                   data = excluded.data""",
+            (ph, json.dumps(ioc, default=str), now, now),
+        )
+        self._conn.commit()
+
+    def query_iocs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT data FROM shield_iocs ORDER BY last_seen DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [json.loads(row["data"]) for row in rows]
+
+
+# ---- Factory ----
+
+
+def create_backend(
+    backend_type: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> StorageBackend:
+    """Create a storage backend from config or environment variables.
+
+    Environment variables:
+        SHIELD_STORAGE_BACKEND  -- ``memory`` (default) or ``sqlite``
+        SHIELD_STORAGE_PATH     -- path to SQLite DB (default: ``shield.db``)
+    """
+    btype = backend_type or os.getenv("SHIELD_STORAGE_BACKEND", "memory")
+    if btype == "sqlite":
+        path = db_path or os.getenv("SHIELD_STORAGE_PATH", "shield.db")
+        return SQLiteBackend(path)
+    return MemoryBackend()

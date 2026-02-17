@@ -75,6 +75,24 @@ def sanitize_input(user_input):
         user_input = normalized_input
         sanitizations_applied.append("whitespace_normalized")
 
+    # 10. Invisible Unicode character removal
+    _invisible_chars = [
+        '\u200b',  # zero-width space
+        '\u200c',  # zero-width non-joiner
+        '\u200d',  # zero-width joiner
+        '\ufeff',  # byte order mark / zero-width no-break space
+        '\u00ad',  # soft hyphen
+        '\u2060',  # word joiner
+        '\u202e',  # right-to-left override
+        '\u202d',  # left-to-right override
+    ]
+    cleaned = user_input
+    for char in _invisible_chars:
+        cleaned = cleaned.replace(char, '')
+    if cleaned != user_input:
+        user_input = cleaned
+        sanitizations_applied.append("invisible_unicode_removed")
+
     if sanitizations_applied:
         print(f"[SHIELD-SANITIZER] Applied: {', '.join(sanitizations_applied)}")
 

@@ -17,7 +17,7 @@ Usage with Flask:
     app.register_blueprint(create_shield_blueprint(shield), url_prefix='/shield')
 """
 
-__version__ = "0.2.2"
+__version__ = "0.4.0"
 
 from .sanitizer import sanitize_input
 from .pattern_detector import detect_attack_patterns
@@ -28,15 +28,20 @@ from .ml_client import MLClient
 from .ensemble import EnsembleEngine
 from .session import SessionManager
 from .rate_limiter import RateLimiter
-from .storage import StorageBackend, MemoryStorage, SQLiteStorage
-from .deception import DeceptionResponder
-from .webhooks import WebhookManager
+from .drift_monitor import DriftMonitor
+from . import frameworks
+from .frameworks import build_threat_mapping, compass_export
 
 __all__ = [
     "__version__",
     # Core classes
     "Shield",
     "ShieldResult",
+    "DriftMonitor",
+    # Framework compliance
+    "frameworks",
+    "build_threat_mapping",
+    "compass_export",
     # Pipeline components
     "sanitize_input",
     "detect_attack_patterns",
@@ -46,27 +51,152 @@ __all__ = [
     "EnsembleEngine",
     "SessionManager",
     "RateLimiter",
-    # Storage
-    "StorageBackend",
-    "MemoryStorage",
-    "SQLiteStorage",
-    # Deception
-    "DeceptionResponder",
-    # Webhooks
-    "WebhookManager",
     # LLM providers
     "create_llm_judge",
     "chat_completion",
     # Flask integration
     "create_shield_blueprint",
+    # Webhooks
+    "WebhookManager",
+    "SlackNotifier",
+    "TeamsNotifier",
+    "PagerDutyNotifier",
+    # Allama SOAR
+    "AllamaNotifier",
+    "AllamaClient",
+    # FastAPI integration
+    "ShieldMiddleware",
+    "create_shield_router",
+    # LangGraph integration
+    "create_shield_node",
+    "shield_wrap_node",
+    # LiteLLM integration
+    "OublietteCallback",
+    # CrewAI integration
+    "ShieldTaskCallback",
+    "ShieldGuardCallback",
+    "ShieldTool",
+    # Haystack integration
+    "ShieldGuard",
+    # Semantic Kernel integration
+    "ShieldPromptFilter",
+    "ShieldFunctionFilter",
+    # DSPy integration
+    "shield_assert",
+    "shield_suggest",
+    "ShieldModule",
+    # Errors
+    "ShieldBlockedError",
+    # Scanners
+    "ScanFinding",
+    "scan_secrets",
+    "scan_pii",
+    "scan_invisible_text",
+    "scan_urls",
+    "scan_language",
+    "scan_gibberish",
+    "scan_refusal",
+    "scan_all",
+    "scan_ai_generated",
+    # Output scanner
+    "OutputScanner",
+    "OutputScanResult",
+    # Agent policy
+    "AgentPolicy",
+    "PolicyValidator",
+    "PolicyViolation",
+    # Storage
+    "StorageBackend",
+    "MemoryBackend",
+    "SQLiteBackend",
+    "create_backend",
+    # Multi-tenancy
+    "Tenant",
+    "TenantManager",
+    # RBAC
+    "User",
+    "RBACManager",
+    "Permission",
+    # Auth middleware
+    "require_auth",
 ]
 
-# Conditional exports for optional integrations
-try:
-    from .models.local_inference import LocalMLClient
-    __all__.append("LocalMLClient")
-except ImportError:
-    pass
+
+def __getattr__(name: str):
+    """Lazy imports for optional-dependency modules."""
+    _WEBHOOK_NAMES = {"WebhookManager", "SlackNotifier", "TeamsNotifier",
+                      "PagerDutyNotifier", "WebhookNotifier", "determine_severity"}
+    _ALLAMA_NAMES = {"AllamaNotifier", "AllamaClient"}
+    _FASTAPI_NAMES = {"ShieldMiddleware", "create_shield_router"}
+    _SCANNER_NAMES = {"ScanFinding", "scan_secrets", "scan_pii",
+                      "scan_invisible_text", "scan_urls", "scan_language",
+                      "scan_gibberish", "scan_refusal", "scan_all",
+                      "scan_ai_generated"}
+    _OUTPUT_SCANNER_NAMES = {"OutputScanner", "OutputScanResult"}
+    _AGENT_POLICY_NAMES = {"AgentPolicy", "PolicyValidator", "PolicyViolation"}
+
+    if name in _WEBHOOK_NAMES:
+        from . import webhooks
+        return getattr(webhooks, name)
+    if name in _ALLAMA_NAMES:
+        from . import allama
+        return getattr(allama, name)
+    if name in _FASTAPI_NAMES:
+        from . import fastapi
+        return getattr(fastapi, name)
+    if name in _SCANNER_NAMES:
+        from . import scanners
+        return getattr(scanners, name)
+    if name in _OUTPUT_SCANNER_NAMES:
+        from . import output_scanner
+        return getattr(output_scanner, name)
+    if name in _AGENT_POLICY_NAMES:
+        from . import agent_policy
+        return getattr(agent_policy, name)
+    _STORAGE_NAMES = {"StorageBackend", "MemoryBackend", "SQLiteBackend", "create_backend"}
+    if name in _STORAGE_NAMES:
+        from . import storage as _storage_mod
+        return getattr(_storage_mod, name)
+    _TENANT_NAMES = {"Tenant", "TenantManager"}
+    _RBAC_NAMES = {"User", "RBACManager", "Permission"}
+    _AUTH_NAMES = {"require_auth"}
+    if name in _TENANT_NAMES:
+        from . import tenant as _tenant_mod
+        return getattr(_tenant_mod, name)
+    if name in _RBAC_NAMES:
+        from . import rbac as _rbac_mod
+        return getattr(_rbac_mod, name)
+    if name in _AUTH_NAMES:
+        from . import auth_middleware as _auth_mod
+        return getattr(_auth_mod, name)
+    if name == "ShieldBlockedError":
+        from .langchain import ShieldBlockedError
+        return ShieldBlockedError
+    _LANGGRAPH_NAMES = {"create_shield_node", "shield_wrap_node"}
+    if name in _LANGGRAPH_NAMES:
+        from . import langgraph as _langgraph_mod
+        return getattr(_langgraph_mod, name)
+    _LITELLM_NAMES = {"OublietteCallback"}
+    if name in _LITELLM_NAMES:
+        from . import litellm as _litellm_mod
+        return getattr(_litellm_mod, name)
+    _CREWAI_NAMES = {"ShieldTaskCallback", "ShieldGuardCallback", "ShieldTool"}
+    if name in _CREWAI_NAMES:
+        from . import crewai as _crewai_mod
+        return getattr(_crewai_mod, name)
+    _HAYSTACK_NAMES = {"ShieldGuard"}
+    if name in _HAYSTACK_NAMES:
+        from . import haystack_integration as _haystack_mod
+        return getattr(_haystack_mod, name)
+    _SK_NAMES = {"ShieldPromptFilter", "ShieldFunctionFilter"}
+    if name in _SK_NAMES:
+        from . import semantic_kernel as _sk_mod
+        return getattr(_sk_mod, name)
+    _DSPY_NAMES = {"shield_assert", "shield_suggest", "ShieldModule"}
+    if name in _DSPY_NAMES:
+        from . import dspy_integration as _dspy_mod
+        return getattr(_dspy_mod, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ShieldResult:
@@ -74,12 +204,13 @@ class ShieldResult:
 
     __slots__ = (
         "verdict", "ml_result", "llm_verdict", "sanitizations",
-        "session", "detection_method", "blocked", "deception_response",
+        "session", "detection_method", "blocked", "threat_mapping",
+        "message_path",
     )
 
     def __init__(self, verdict, ml_result=None, llm_verdict=None,
                  sanitizations=None, session=None, detection_method=None,
-                 deception_response=None):
+                 threat_mapping=None, message_path=None):
         self.verdict = verdict
         self.ml_result = ml_result
         self.llm_verdict = llm_verdict
@@ -87,10 +218,14 @@ class ShieldResult:
         self.session = session or {}
         self.detection_method = detection_method or "unknown"
         self.blocked = verdict in ("MALICIOUS", "SAFE_REVIEW")
-        self.deception_response = deception_response
+        self.threat_mapping = threat_mapping or {
+            "owasp_llm": [], "owasp_agentic": [], "mitre_atlas": [],
+            "cwe": [], "cvss_base": 0.0, "nist_csf": [], "nist_800_53": [],
+        }
+        self.message_path = message_path or []
 
     def to_dict(self):
-        result = {
+        return {
             "verdict": self.verdict,
             "blocked": self.blocked,
             "detection_method": self.detection_method,
@@ -99,10 +234,9 @@ class ShieldResult:
             "llm_verdict": self.llm_verdict,
             "sanitizations": self.sanitizations,
             "session_escalated": self.session.get("escalated", False),
+            "threat_mapping": self.threat_mapping,
+            "message_path": self.message_path,
         }
-        if self.deception_response is not None:
-            result["deception_response"] = self.deception_response
-        return result
 
 
 class Shield:
@@ -116,42 +250,41 @@ class Shield:
         ml_client: Custom MLClient instance (optional)
         session_manager: Custom SessionManager instance (optional)
         rate_limiter: Custom RateLimiter instance (optional)
-        deception_responder: DeceptionResponder instance (optional)
-        webhook_manager: WebhookManager instance (optional)
     """
 
     def __init__(self, llm_judge=None, ml_client=None,
                  session_manager=None, rate_limiter=None,
-                 deception_responder=None, webhook_manager=None):
+                 webhook_manager=None, output_scanner=None,
+                 drift_monitor=None):
         self.session_manager = session_manager or SessionManager()
         self.rate_limiter = rate_limiter or RateLimiter()
+        self.webhook_manager = webhook_manager
+        self.output_scanner = output_scanner
+        self.drift_monitor = drift_monitor or DriftMonitor()
         self.ensemble = EnsembleEngine(
             llm_judge=llm_judge,
             ml_client=ml_client,
         )
-
-        # Deception responder
-        from . import config as _cfg
-        if deception_responder is not None:
-            self.deception_responder = deception_responder
-        elif _cfg.DECEPTION_ENABLED:
-            self.deception_responder = DeceptionResponder(mode=_cfg.DECEPTION_MODE)
-        else:
-            self.deception_responder = None
-
-        # Webhook manager
-        if webhook_manager is not None:
-            self.webhook_manager = webhook_manager
-        elif _cfg.WEBHOOK_URLS:
-            self.webhook_manager = WebhookManager()
-        else:
-            self.webhook_manager = None
+        # Metrics counters for /metrics endpoint
+        self._metrics = {
+            "total": 0, "blocked": 0, "safe": 0,
+            "tp": 0, "fp": 0, "tn": 0, "fn": 0,
+            "by_method": {},
+            "owasp_seen": set(),
+            "mitre_seen": set(),
+            "cwe_seen": set(),
+        }
 
     def start(self):
-        """Start background threads (session cleanup)."""
+        """Start background threads (session cleanup, drift monitor)."""
         self.session_manager.start_cleanup()
+        # Load reference distribution if configured
+        from . import config as _cfg
+        if _cfg.DRIFT_REFERENCE_PATH:
+            self.drift_monitor.load_reference(_cfg.DRIFT_REFERENCE_PATH)
 
-    def analyze(self, user_input, session_id="default", source_ip="127.0.0.1"):
+    def analyze(self, user_input, session_id="default", source_ip="127.0.0.1",
+                expected_verdict=None):
         """
         Analyze a user message through the full detection pipeline.
 
@@ -159,30 +292,57 @@ class Shield:
             user_input: The user's message text
             session_id: Session identifier for multi-turn tracking
             source_ip: Client IP address
+            expected_verdict: Ground-truth label for test mode ("SAFE" or
+                "MALICIOUS"). When provided, TP/FP/TN/FN counters are updated.
 
         Returns:
             ShieldResult with verdict, scores, and session state
         """
+        message_path = []
+
         # Step 1: Sanitize
+        message_path.append("sanitizer")
         sanitized_input, sanitizations = sanitize_input(user_input)
 
         # Reject if sanitization emptied the input
         if sanitizations and (not sanitized_input or not sanitized_input.strip()):
-            return ShieldResult(
+            message_path.append("sanitization_rejection")
+            result = ShieldResult(
                 verdict="MALICIOUS",
                 sanitizations=sanitizations,
                 detection_method="sanitization_rejection",
+                message_path=message_path,
             )
+            self._update_metrics(result, expected_verdict)
+            return result
 
         # Step 2: Get session state
+        message_path.append("session_lookup")
         session = self.session_manager.get(session_id)
 
         # Step 3: Ensemble verdict
+        message_path.append("ensemble")
         verdict, ml_result, llm_verdict = self.ensemble.get_verdict(
             sanitized_input, session, source_ip, sanitizations
         )
 
+        # Tag which ensemble sub-stages ran
+        if llm_verdict and llm_verdict.startswith("PRE_BLOCKED"):
+            message_path.append("pre_filter")
+        if ml_result:
+            message_path.append("ml_classifier")
+        if llm_verdict and not llm_verdict.startswith("PRE_BLOCKED"):
+            message_path.append("llm_judge")
+
+        # Step 3b: Record to drift monitor
+        if ml_result and self.drift_monitor is not None:
+            message_path.append("drift_monitor")
+            self.drift_monitor.record(
+                ml_result.get("score", 0.0), text=sanitized_input
+            )
+
         # Step 4: Update session
+        message_path.append("session_update")
         updated_session = self.session_manager.update(
             session_id, sanitized_input, verdict, ml_result, source_ip, sanitizations
         )
@@ -199,38 +359,107 @@ class Shield:
         else:
             detection_method = "escalation"
 
-        # Step 5: Deception response (if enabled and malicious)
-        deception_response = None
-        if self.deception_responder and verdict in ("MALICIOUS", "SAFE_REVIEW"):
-            attack_patterns = updated_session.get("attack_patterns", [])
-            deception_response = self.deception_responder.generate(
-                sanitized_input, verdict=verdict, attack_patterns=attack_patterns
-            )
+        # Build threat mapping from detection results
+        ml_category = None
+        if ml_result:
+            ml_category = ml_result.get("threat_type")
+        threat_mapping = build_threat_mapping(
+            detection_method=detection_method,
+            ml_result=ml_result,
+            llm_verdict=llm_verdict,
+            category=ml_category,
+        )
 
-        # Step 6: Webhook notifications
-        if self.webhook_manager:
-            event_type = "malicious" if verdict == "MALICIOUS" else (
-                "escalation" if updated_session.get("escalated") else None
-            )
-            if event_type:
-                self.webhook_manager.notify(event_type, {
-                    "verdict": verdict,
-                    "session_id": session_id,
-                    "source_ip": source_ip,
-                    "detection_method": detection_method,
-                    "ml_score": ml_result.get("score") if ml_result else None,
-                    "user_input": sanitized_input[:200],
-                })
-
-        return ShieldResult(
+        result = ShieldResult(
             verdict=verdict,
             ml_result=ml_result,
             llm_verdict=llm_verdict,
             sanitizations=sanitizations,
             session=updated_session,
             detection_method=detection_method,
-            deception_response=deception_response,
+            threat_mapping=threat_mapping,
+            message_path=message_path,
         )
+
+        # Update metrics counters (including confusion matrix)
+        self._update_metrics(result, expected_verdict)
+
+        # Fire webhook notifications
+        if self.webhook_manager and result.blocked:
+            try:
+                self.webhook_manager.notify_detection(
+                    result.to_dict(),
+                    session_id=session_id,
+                    source_ip=source_ip,
+                    user_input=user_input,
+                )
+                # Check if session just escalated
+                was_escalated = session.get("escalated", False)
+                now_escalated = updated_session.get("escalated", False)
+                if now_escalated and not was_escalated:
+                    self.webhook_manager.notify_escalation(
+                        session_id=session_id,
+                        source_ip=source_ip,
+                        reason=updated_session.get("escalation_reason", ""),
+                        threat_count=updated_session.get("threat_count", 0),
+                    )
+            except Exception:
+                pass  # Never let webhook errors break the pipeline
+
+        return result
+
+    def _update_metrics(self, result, expected_verdict=None):
+        """Update internal metrics counters including confusion matrix."""
+        self._metrics["total"] += 1
+        if result.blocked:
+            self._metrics["blocked"] += 1
+        else:
+            self._metrics["safe"] += 1
+        method_key = result.detection_method or "unknown"
+        self._metrics["by_method"][method_key] = (
+            self._metrics["by_method"].get(method_key, 0) + 1
+        )
+        tm = result.threat_mapping or {}
+        self._metrics["owasp_seen"].update(tm.get("owasp_llm", []))
+        self._metrics["mitre_seen"].update(tm.get("mitre_atlas", []))
+        self._metrics["cwe_seen"].update(tm.get("cwe", []))
+        # Confusion matrix: compare predicted vs expected ground truth
+        if expected_verdict is not None:
+            expected_blocked = expected_verdict.upper() in ("MALICIOUS", "SAFE_REVIEW")
+            if result.blocked and expected_blocked:
+                self._metrics["tp"] += 1
+            elif result.blocked and not expected_blocked:
+                self._metrics["fp"] += 1
+            elif not result.blocked and not expected_blocked:
+                self._metrics["tn"] += 1
+            else:
+                self._metrics["fn"] += 1
+
+    def scan_output(self, text):
+        """Scan LLM output through content scanners.
+
+        Args:
+            text: The LLM response text
+
+        Returns:
+            OutputScanResult with findings and blocked status
+        """
+        if self.output_scanner is None:
+            from .output_scanner import OutputScanner
+            self.output_scanner = OutputScanner()
+        return self.output_scanner.scan(text)
+
+    def scan_input(self, text):
+        """Run content scanners on input text (standalone, no pipeline).
+
+        Args:
+            text: The user input text
+
+        Returns:
+            List of ScanFinding instances
+        """
+        from .scanners import scan_all
+        return scan_all(text)
 
     def check_rate_limit(self, ip):
         """Check if an IP is within rate limits."""
@@ -242,12 +471,9 @@ def create_shield_blueprint(shield=None):
     Create a Flask Blueprint that exposes the Shield as an API proxy.
 
     Endpoints:
-        POST /analyze     - Analyze a message
-        GET  /health      - Health check
-        GET  /sessions    - List sessions
-        GET  /dashboard   - HTML dashboard
-        GET  /openapi.json - OpenAPI spec
-        GET  /docs        - Swagger UI
+        POST /analyze   - Analyze a message
+        GET  /health    - Health check
+        GET  /sessions  - List sessions
 
     Args:
         shield: Shield instance (creates default if None)
@@ -292,16 +518,23 @@ def create_shield_blueprint(shield=None):
         if len(message) > 10000:
             return jsonify({"error": "Message too long (max 10000 chars)"}), 400
 
-        result = _shield.analyze(message, session_id=session_id, source_ip=source_ip)
+        expected_verdict = data.get("expected_verdict")
+        result = _shield.analyze(
+            message, session_id=session_id, source_ip=source_ip,
+            expected_verdict=expected_verdict,
+        )
         return jsonify(result.to_dict())
 
     @bp.route("/health")
     def health():
-        return jsonify({
+        resp = {
             "shield": "healthy",
             "version": __version__,
             "active_sessions": _shield.session_manager.active_count,
-        })
+        }
+        if _shield.drift_monitor is not None:
+            resp["drift"] = _shield.drift_monitor.get_health()
+        return jsonify(resp)
 
     @bp.route("/sessions")
     @_require_api_key
@@ -318,6 +551,56 @@ def create_shield_blueprint(shield=None):
             for sid, s in all_sessions.items()
         ]
         return jsonify({"sessions": summary, "total": len(summary)})
+
+    @bp.route("/metrics")
+    @_require_api_key
+    def get_metrics():
+        m = _shield._metrics
+        tp, fp, tn, fn = m["tp"], m["fp"], m["tn"], m["fn"]
+        cm_total = tp + fp + tn + fn
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (2 * precision * recall / (precision + recall)
+               if (precision + recall) > 0 else 0.0)
+        return jsonify({
+            "total_requests": m["total"],
+            "blocked": m["blocked"],
+            "safe": m["safe"],
+            "detection_rate": (
+                (m["blocked"] / m["total"] * 100) if m["total"] > 0 else 0.0
+            ),
+            "by_method": m["by_method"],
+            "framework_coverage": {
+                "owasp_llm_top10": sorted(m["owasp_seen"]),
+                "mitre_atlas": sorted(m["mitre_seen"]),
+                "cwe": sorted(m["cwe_seen"]),
+            },
+            "confusion_matrix": {
+                "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+                "total_labeled": cm_total,
+                "precision": round(precision, 4),
+                "recall": round(recall, 4),
+                "f1": round(f1, 4),
+            },
+        })
+
+    @bp.route("/drift")
+    @_require_api_key
+    def drift_status():
+        report = _shield.drift_monitor.check()
+        return jsonify(report)
+
+    @bp.route("/drift/alerts")
+    @_require_api_key
+    def drift_alerts():
+        limit = request.args.get("limit", 20, type=int)
+        alerts = _shield.drift_monitor.get_alerts(limit)
+        return jsonify({"alerts": alerts, "total": len(alerts)})
+
+    @bp.route("/drift/hourly")
+    @_require_api_key
+    def drift_hourly():
+        return jsonify({"hourly": _shield.drift_monitor.get_hourly_history()})
 
     @bp.route("/dashboard")
     @_require_api_key
@@ -341,17 +624,6 @@ def create_shield_blueprint(shield=None):
             session_ttl=shield_config.SESSION_TTL_SECONDS,
             session_max=shield_config.SESSION_MAX_COUNT,
         )
-
-    @bp.route("/openapi.json")
-    def openapi_json():
-        from .openapi import OPENAPI_SPEC
-        return jsonify(OPENAPI_SPEC)
-
-    @bp.route("/docs")
-    def swagger_ui():
-        from flask import Response
-        from .openapi import SWAGGER_UI_HTML
-        return Response(SWAGGER_UI_HTML, mimetype="text/html")
 
     return bp
 

@@ -5,12 +5,17 @@ Pluggable LLM backends for the security classifier and chat completion.
 
 Supported providers:
     - ollama (default): Local Ollama with llama3, mistral, phi3, gemma2, qwen2.5
+    - ollama_structured: Ollama with JSON schema output (v0.5+)
     - openai: OpenAI GPT-4o / GPT-4o-mini
+    - openai_compat: Any OpenAI-compatible server (vLLM, LocalAI, LM Studio, llama.cpp)
     - anthropic: Anthropic Claude Sonnet / Haiku
     - azure: Azure OpenAI Service
     - bedrock: AWS Bedrock (Claude, Titan, Llama)
     - vertex: Google Vertex AI (Gemini)
     - gemini: Google Gemini API (direct)
+    - llamacpp: Direct in-process GGUF inference via llama-cpp-python
+    - transformer_classifier: HuggingFace transformers binary classifier (e.g. ProtectAI DeBERTa)
+    - fallback: Try multiple providers in order until one succeeds
 
 Usage:
     from oubliette_shield.llm_providers import create_llm_judge, chat_completion
@@ -326,17 +331,341 @@ class GeminiJudge(LLMJudge):
 
 
 # ============================================================================
+# Provider: Ollama Structured (JSON schema output, v0.5+)
+# ============================================================================
+
+class OllamaStructuredJudge(OllamaJudge):
+    """Ollama judge using structured JSON output (requires Ollama v0.5+).
+
+    Returns JSON: {"verdict": "SAFE"|"UNSAFE", "confidence": 0.0-1.0}
+    Eliminates verdict parsing errors by constraining output format.
+    """
+
+    _JSON_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "verdict": {"type": "string", "enum": ["SAFE", "UNSAFE"]},
+            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        },
+        "required": ["verdict"],
+    }
+
+    def _call_llm(self, user_input):
+        import ollama
+        response = ollama.chat(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_input},
+            ],
+            options=self.options,
+            format=self._JSON_SCHEMA,
+        )
+        return response["message"]["content"].strip()
+
+    def get_verdict(self, user_input):
+        """Parse structured JSON verdict directly instead of text extraction."""
+        import json
+        try:
+            raw = self._call_llm(user_input)
+            data = json.loads(raw)
+            verdict = data.get("verdict", "").upper()
+            if verdict in ("SAFE", "UNSAFE"):
+                confidence = data.get("confidence", None)
+                conf_str = f" (confidence={confidence})" if confidence is not None else ""
+                print(f"[SHIELD-JUDGE] Structured verdict: {verdict}{conf_str}")
+                return verdict
+            print(f"[SHIELD-JUDGE] Invalid structured verdict: {verdict}, defaulting to UNSAFE")
+            return "UNSAFE"
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"[SHIELD-JUDGE] Structured JSON parse error: {e}, defaulting to UNSAFE")
+            return "UNSAFE"
+        except Exception as e:
+            print(f"[SHIELD-JUDGE] LLM Error: {e}")
+            return "UNSAFE"
+
+
+# ============================================================================
+# Provider: OpenAI-Compatible (vLLM, LocalAI, LM Studio, llama.cpp server)
+# ============================================================================
+
+class OpenAICompatibleJudge(LLMJudge):
+    """Generic judge for any OpenAI-compatible API server.
+
+    Works with vLLM, LocalAI, LM Studio, llama.cpp server, and others.
+    Requires: pip install openai
+
+    Config env vars:
+        SHIELD_OPENAI_COMPAT_BASE_URL: Server URL (default: http://localhost:8000/v1)
+        SHIELD_OPENAI_COMPAT_API_KEY: API key (default: not-needed)
+        SHIELD_LLM_MODEL: Model name (default: default)
+    """
+
+    def __init__(self, model=None, base_url=None, api_key=None, **kwargs):
+        default_model = os.getenv("SHIELD_LLM_MODEL", "default")
+        super().__init__(model=model or default_model, **kwargs)
+        self.base_url = base_url or os.getenv(
+            "SHIELD_OPENAI_COMPAT_BASE_URL", "http://localhost:8000/v1"
+        )
+        self.api_key = api_key or os.getenv("SHIELD_OPENAI_COMPAT_API_KEY", "not-needed")
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            try:
+                import openai
+            except ImportError:
+                raise ImportError(
+                    "openai package required. Install with: pip install openai>=1.0.0"
+                )
+            self._client = openai.OpenAI(
+                base_url=self.base_url,
+                api_key=self.api_key,
+            )
+        return self._client
+
+    def _call_llm(self, user_input):
+        client = self._get_client()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_input},
+            ],
+            max_tokens=10,
+            temperature=0.1,
+        )
+        return response.choices[0].message.content.strip()
+
+
+# ============================================================================
+# Provider: llama-cpp-python (direct in-process GGUF inference)
+# ============================================================================
+
+class LlamaCppJudge(LLMJudge):
+    """Direct in-process GGUF inference via llama-cpp-python.
+
+    No server required -- loads the model directly into the Python process.
+    Uses GBNF grammar to constrain output to exactly "SAFE" or "UNSAFE".
+    Requires: pip install llama-cpp-python>=0.2.0
+
+    Config env vars:
+        SHIELD_GGUF_PATH: Path to .gguf model file (required)
+        SHIELD_GPU_LAYERS: Number of layers to offload to GPU (default: 0)
+    """
+
+    _GBNF_GRAMMAR = 'root ::= "SAFE" | "UNSAFE"'
+
+    def __init__(self, model=None, gguf_path=None, gpu_layers=None, **kwargs):
+        super().__init__(model=model or "gguf-local", **kwargs)
+        self.gguf_path = gguf_path or os.getenv("SHIELD_GGUF_PATH", "")
+        if not self.gguf_path:
+            raise ValueError(
+                "GGUF model path required. Set SHIELD_GGUF_PATH env var "
+                "or pass gguf_path= parameter."
+            )
+        self.gpu_layers = int(
+            gpu_layers if gpu_layers is not None
+            else os.getenv("SHIELD_GPU_LAYERS", "0")
+        )
+        self._llm = None
+
+    def _get_llm(self):
+        if self._llm is None:
+            try:
+                from llama_cpp import Llama
+            except ImportError:
+                raise ImportError(
+                    "llama-cpp-python required. Install with: "
+                    "pip install llama-cpp-python>=0.2.0"
+                )
+            self._llm = Llama(
+                model_path=self.gguf_path,
+                n_gpu_layers=self.gpu_layers,
+                n_ctx=512,
+                verbose=False,
+            )
+        return self._llm
+
+    def _call_llm(self, user_input):
+        from llama_cpp import LlamaGrammar
+        llm = self._get_llm()
+        grammar = LlamaGrammar.from_string(self._GBNF_GRAMMAR)
+        prompt = (
+            f"<|system|>\n{self.system_prompt}\n"
+            f"<|user|>\n{user_input}\n"
+            f"<|assistant|>\n"
+        )
+        output = llm(
+            prompt,
+            max_tokens=8,
+            temperature=0.0,
+            grammar=grammar,
+        )
+        return output["choices"][0]["text"].strip()
+
+
+# ============================================================================
+# Provider: Transformer Classifier (HuggingFace binary classifier)
+# ============================================================================
+
+class TransformerClassifierJudge(LLMJudge):
+    """HuggingFace transformers binary injection classifier.
+
+    Uses a text-classification pipeline for fast (~30ms) binary verdicts.
+    Not a generative model -- overrides get_verdict() entirely.
+    Requires: pip install transformers>=4.35.0 torch>=2.0.0
+
+    Config env vars:
+        SHIELD_CLASSIFIER_MODEL: HF model ID
+            (default: protectai/deberta-v3-base-prompt-injection-v2)
+        SHIELD_CLASSIFIER_THRESHOLD: Confidence threshold (default: 0.5)
+    """
+
+    # Labels that map to UNSAFE
+    _UNSAFE_LABELS = {"INJECTION", "JAILBREAK", "MALICIOUS", "LABEL_1", "1"}
+    # Labels that map to SAFE
+    _SAFE_LABELS = {"BENIGN", "SAFE", "LABEL_0", "0"}
+
+    def __init__(self, model=None, threshold=None, **kwargs):
+        default_model = os.getenv(
+            "SHIELD_CLASSIFIER_MODEL",
+            "protectai/deberta-v3-base-prompt-injection-v2",
+        )
+        super().__init__(model=model or default_model, **kwargs)
+        self.threshold = float(
+            threshold if threshold is not None
+            else os.getenv("SHIELD_CLASSIFIER_THRESHOLD", "0.5")
+        )
+        self._pipeline = None
+
+    def _get_pipeline(self):
+        if self._pipeline is None:
+            try:
+                from transformers import pipeline
+            except ImportError:
+                raise ImportError(
+                    "transformers package required. Install with: "
+                    "pip install transformers>=4.35.0 torch>=2.0.0"
+                )
+            self._pipeline = pipeline(
+                "text-classification",
+                model=self.model,
+                truncation=True,
+            )
+        return self._pipeline
+
+    def get_verdict(self, user_input):
+        """Classify via HuggingFace pipeline instead of generative LLM."""
+        try:
+            pipe = self._get_pipeline()
+            results = pipe(user_input)
+            if not results:
+                print("[SHIELD-JUDGE] Transformer returned empty results, defaulting to UNSAFE")
+                return "UNSAFE"
+
+            label = results[0]["label"].upper()
+            score = results[0]["score"]
+
+            if label in self._UNSAFE_LABELS and score >= self.threshold:
+                print(f"[SHIELD-JUDGE] Transformer: UNSAFE ({label}={score:.3f})")
+                return "UNSAFE"
+            elif label in self._SAFE_LABELS and score >= self.threshold:
+                print(f"[SHIELD-JUDGE] Transformer: SAFE ({label}={score:.3f})")
+                return "SAFE"
+            else:
+                # Unknown label or below threshold -- fail closed
+                print(
+                    f"[SHIELD-JUDGE] Transformer: unknown label '{label}' "
+                    f"(score={score:.3f}), defaulting to UNSAFE"
+                )
+                return "UNSAFE"
+        except Exception as e:
+            print(f"[SHIELD-JUDGE] Transformer error: {e}")
+            return "UNSAFE"
+
+    def _call_llm(self, user_input):
+        """Not used -- get_verdict() is overridden."""
+        raise NotImplementedError("TransformerClassifierJudge does not use _call_llm()")
+
+
+# ============================================================================
+# Provider: Fallback Chain (tries providers in order)
+# ============================================================================
+
+class FallbackJudge(LLMJudge):
+    """Tries multiple LLM providers in order until one succeeds.
+
+    Useful for resilient setups: e.g. try local Ollama first, fall back to
+    cloud provider if unavailable, then fall back to a fast classifier.
+
+    Config env vars:
+        SHIELD_FALLBACK_PROVIDERS: Comma-separated provider names
+            (default: ollama,openai_compat,transformer_classifier)
+    """
+
+    def __init__(self, providers=None, **kwargs):
+        super().__init__(**kwargs)
+        if providers is not None:
+            self._provider_names = providers
+        else:
+            env = os.getenv(
+                "SHIELD_FALLBACK_PROVIDERS",
+                "ollama,openai_compat,transformer_classifier",
+            )
+            self._provider_names = [p.strip() for p in env.split(",") if p.strip()]
+        self._chain = None
+
+    def _init_chain(self):
+        """Lazy-initialize the provider chain on first use."""
+        if self._chain is not None:
+            return
+        self._chain = []
+        for name in self._provider_names:
+            try:
+                judge = create_llm_judge(name)
+                self._chain.append((name, judge))
+                print(f"[SHIELD-FALLBACK] Initialized provider: {name}")
+            except Exception as e:
+                print(f"[SHIELD-FALLBACK] Skipped provider '{name}': {e}")
+
+    def get_verdict(self, user_input):
+        """Try each provider in order; return first successful verdict."""
+        self._init_chain()
+        for name, judge in self._chain:
+            try:
+                verdict = judge.get_verdict(user_input)
+                print(f"[SHIELD-FALLBACK] Got verdict from '{name}': {verdict}")
+                return verdict
+            except Exception as e:
+                print(f"[SHIELD-FALLBACK] Provider '{name}' failed: {e}")
+                continue
+
+        print("[SHIELD-FALLBACK] All providers failed, defaulting to UNSAFE")
+        return "UNSAFE"
+
+    def _call_llm(self, user_input):
+        """Not used -- get_verdict() is overridden."""
+        raise NotImplementedError("FallbackJudge does not use _call_llm()")
+
+
+# ============================================================================
 # Factory
 # ============================================================================
 
 _PROVIDERS = {
     "ollama": OllamaJudge,
+    "ollama_structured": OllamaStructuredJudge,
     "openai": OpenAIJudge,
+    "openai_compat": OpenAICompatibleJudge,
     "anthropic": AnthropicJudge,
     "azure": AzureOpenAIJudge,
     "bedrock": BedrockJudge,
     "vertex": VertexAIJudge,
     "gemini": GeminiJudge,
+    "llamacpp": LlamaCppJudge,
+    "transformer_classifier": TransformerClassifierJudge,
+    "fallback": FallbackJudge,
 }
 
 
@@ -345,7 +674,9 @@ def create_llm_judge(provider=None, **kwargs):
     Factory: create an LLM judge for the configured provider.
 
     Args:
-        provider: Provider name (ollama, openai, anthropic, azure, bedrock, vertex, gemini).
+        provider: Provider name. One of: ollama, ollama_structured, openai,
+                  openai_compat, anthropic, azure, bedrock, vertex, gemini,
+                  llamacpp, transformer_classifier, fallback.
                   Defaults to SHIELD_LLM_PROVIDER env var or "ollama".
         **kwargs: Provider-specific arguments (api_key, endpoint, etc.)
 
@@ -394,14 +725,16 @@ def chat_completion(messages, system=None, options=None, **kwargs):
 
     # Build full message list with system prompt
     full_messages = []
-    if system and provider in ("ollama", "openai", "azure"):
+    if system and provider in ("ollama", "ollama_structured", "openai", "openai_compat", "azure", "llamacpp"):
         full_messages.append({"role": "system", "content": system})
     full_messages.extend(messages)
 
-    if provider == "ollama":
+    if provider in ("ollama", "ollama_structured"):
         return _chat_ollama(full_messages, model, options)
     elif provider == "openai":
         return _chat_openai(full_messages, model, kwargs.get("api_key"))
+    elif provider == "openai_compat":
+        return _chat_openai_compat(full_messages, model, kwargs)
     elif provider == "anthropic":
         return _chat_anthropic(full_messages, model, system, kwargs.get("api_key"))
     elif provider == "azure":
@@ -410,6 +743,8 @@ def chat_completion(messages, system=None, options=None, **kwargs):
         return _chat_bedrock(full_messages, model, system, kwargs)
     elif provider in ("vertex", "gemini"):
         return _chat_gemini(full_messages, model, system, provider, kwargs)
+    elif provider == "llamacpp":
+        return _chat_llamacpp(full_messages, kwargs)
     else:
         # Fallback to Ollama
         return _chat_ollama(full_messages, model, options)
@@ -551,3 +886,49 @@ def _chat_gemini(messages, model, system=None, provider="gemini", kwargs=None):
         generation_config={"max_output_tokens": 200, "temperature": 0.7},
     )
     return response.text
+
+
+def _chat_openai_compat(messages, model, kwargs=None):
+    """OpenAI-compatible server chat completion (vLLM, LocalAI, etc.)."""
+    try:
+        import openai
+    except ImportError:
+        raise ImportError("openai package required. Install with: pip install openai>=1.0.0")
+    kwargs = kwargs or {}
+    base_url = kwargs.get("base_url") or os.getenv(
+        "SHIELD_OPENAI_COMPAT_BASE_URL", "http://localhost:8000/v1"
+    )
+    api_key = kwargs.get("api_key") or os.getenv("SHIELD_OPENAI_COMPAT_API_KEY", "not-needed")
+    client = openai.OpenAI(base_url=base_url, api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=200,
+        temperature=0.7,
+    )
+    return response.choices[0].message.content
+
+
+def _chat_llamacpp(messages, kwargs=None):
+    """llama-cpp-python chat completion."""
+    try:
+        from llama_cpp import Llama
+    except ImportError:
+        raise ImportError(
+            "llama-cpp-python required. Install with: pip install llama-cpp-python>=0.2.0"
+        )
+    kwargs = kwargs or {}
+    gguf_path = kwargs.get("gguf_path") or os.getenv("SHIELD_GGUF_PATH", "")
+    if not gguf_path:
+        raise ValueError("GGUF model path required. Set SHIELD_GGUF_PATH env var.")
+    gpu_layers = int(kwargs.get("gpu_layers", os.getenv("SHIELD_GPU_LAYERS", "0")))
+    llm = Llama(model_path=gguf_path, n_gpu_layers=gpu_layers, n_ctx=1024, verbose=False)
+    # Build prompt from messages
+    prompt_parts = []
+    for m in messages:
+        role = m["role"]
+        prompt_parts.append(f"<|{role}|>\n{m['content']}")
+    prompt_parts.append("<|assistant|>\n")
+    prompt = "\n".join(prompt_parts)
+    output = llm(prompt, max_tokens=200, temperature=0.7)
+    return output["choices"][0]["text"].strip()

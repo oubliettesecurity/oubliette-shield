@@ -52,7 +52,6 @@ SIG_SESSION_ESCALATION = "200"
 SIG_HONEY_TOKEN = "300"
 SIG_RATE_LIMIT = "400"
 SIG_SANITIZATION = "500"
-SIG_DECEPTION = "600"
 
 # Signature name lookup
 _SIG_NAMES = {
@@ -65,7 +64,6 @@ _SIG_NAMES = {
     SIG_HONEY_TOKEN: "Honey Token Triggered",
     SIG_RATE_LIMIT: "Rate Limit Exceeded",
     SIG_SANITIZATION: "Input Sanitized",
-    SIG_DECEPTION: "Deception Response Sent",
 }
 
 
@@ -189,11 +187,24 @@ class CEFLogger:
 
     def log_detection(self, verdict, user_input, session_id, source_ip,
                       ml_result=None, llm_verdict=None, detection_method=None,
-                      sanitizations=None, attack_patterns=None):
+                      sanitizations=None, attack_patterns=None,
+                      threat_mapping=None):
         """
         Log a detection event in CEF format.
 
         This is the primary logging method called after each message analysis.
+
+        Args:
+            verdict: Detection verdict string
+            user_input: Original user message
+            session_id: Session identifier
+            source_ip: Client IP address
+            ml_result: ML classifier result dict (optional)
+            llm_verdict: LLM judge verdict string (optional)
+            detection_method: How the threat was detected (optional)
+            sanitizations: List of sanitizations applied (optional)
+            attack_patterns: List of attack patterns found (optional)
+            threat_mapping: Framework mapping dict from ShieldResult (optional)
         """
         # Determine signature ID and severity
         if detection_method == "pre_filter":
@@ -251,6 +262,28 @@ class CEFLogger:
             extensions["cs6"] = ",".join(sanitizations)
             extensions["cs6Label"] = "Sanitizations"
 
+        # Framework mapping fields (cs7-cs9, cfp2)
+        if threat_mapping:
+            owasp_ids = threat_mapping.get("owasp_llm", [])
+            if owasp_ids:
+                extensions["cs7"] = ",".join(owasp_ids)
+                extensions["cs7Label"] = "OWASPMapping"
+
+            mitre_ids = threat_mapping.get("mitre_atlas", [])
+            if mitre_ids:
+                extensions["cs8"] = ",".join(mitre_ids)
+                extensions["cs8Label"] = "MITREMapping"
+
+            cwe_ids = threat_mapping.get("cwe", [])
+            if cwe_ids:
+                extensions["cs9"] = ",".join(cwe_ids)
+                extensions["cs9Label"] = "CWEMapping"
+
+            cvss = threat_mapping.get("cvss_base", 0.0)
+            if cvss > 0:
+                extensions["cfp2"] = cvss
+                extensions["cfp2Label"] = "CVSSBaseScore"
+
         cef_line = self._build_cef_line(sig_id, name, severity, extensions)
         self._emit(cef_line)
 
@@ -289,21 +322,5 @@ class CEFLogger:
         }
         cef_line = self._build_cef_line(
             SIG_RATE_LIMIT, "Rate Limit Exceeded", 4, extensions
-        )
-        self._emit(cef_line)
-
-    def log_deception(self, session_id, source_ip, deception_mode, verdict):
-        """Log a deception response event."""
-        extensions = {
-            "src": source_ip,
-            "cs1": session_id,
-            "cs1Label": "SessionID",
-            "cs2": deception_mode,
-            "cs2Label": "DeceptionMode",
-            "act": verdict,
-            "msg": f"Deception response sent ({deception_mode} mode)",
-        }
-        cef_line = self._build_cef_line(
-            SIG_DECEPTION, "Deception Response Sent", 6, extensions
         )
         self._emit(cef_line)
