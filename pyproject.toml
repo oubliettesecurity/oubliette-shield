@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oubliette-shield"
-version = "0.4.0"
+version = "1.0.0"
 description = "AI LLM Firewall -- Runtime defense for LLM applications against prompt injection, jailbreak, and adversarial attacks"
 readme = "README.md"
 license = "Apache-2.0"
