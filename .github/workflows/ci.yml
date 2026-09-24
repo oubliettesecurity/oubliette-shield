@@ -24,11 +24,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,flask,ml]"
+          # Real extras only — pyproject has no `ml` extra (was breaking / warning in CI)
+          pip install -e ".[dev,flask]"
 
       - name: Run tests
         run: |
-          python -m pytest tests/ -v --tb=short
+          # Live-server integration tests need :5000/:8000; skip in CI (opt-in via SHIELD_RUN_INTEGRATION_TESTS)
+          python -m pytest tests/ -v --tb=short --ignore=tests/test_integration.py
 
   package:
     runs-on: ubuntu-latest

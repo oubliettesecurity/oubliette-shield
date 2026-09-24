@@ -1,3 +1,8 @@
+# LEGACY (public mirror): PyPI releases for oubliette-shield are owned by the
+# private source-of-truth repo oubliettesecurity/oubliette via Trusted Publishing
+# (OIDC). This tag-triggered workflow is retained for history / emergency use
+# until the public mirror is synced or the workflow is retired. Prefer publishing
+# from the private SoT; do not treat this file as the go-forward release path.
 name: Publish to PyPI
 
 on:
