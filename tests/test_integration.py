@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """
 Integration tests for Oubliette + Anomaly Detection System
+
+These tests require two live services running locally (Oubliette on :5000
+and the Anomaly Detection API on :8000). They are skipped by default and
+opted into with ``SHIELD_RUN_INTEGRATION_TESTS=true``. CI does not run them.
 """
 
 import json
+import os
 import time
 import requests
 import pytest
 from datetime import datetime
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("SHIELD_RUN_INTEGRATION_TESTS", "").lower() != "true",
+    reason=(
+        "Integration tests require live servers on :5000 and :8000. "
+        "Set SHIELD_RUN_INTEGRATION_TESTS=true and start both services to run."
+    ),
+)
 
 
 # Configuration

@@ -19,6 +19,9 @@
 pip install oubliette-shield
 ```
 
+
+> **Public mirror note:** [`oubliettesecurity/oubliette`](https://github.com/oubliettesecurity/oubliette) is the live source of truth and release vehicle for `oubliette-shield` (including PyPI publishes via Trusted Publishing). This public repository is a mirror and may lag behind the private tree. Prefer the private SoT for current releases and development.
+
 ## Quick Start
 
 ```python
@@ -35,7 +38,7 @@ print(result.blocked)    # True
 Oubliette Shield is an open-source AI LLM Firewall that protects LLM applications from prompt injection, jailbreak, and adversarial attacks. Rather than simply blocking attacks, the platform deploys **cyber deception techniques** -- serving convincing decoy responses and honey tokens to attackers while collecting forensic intelligence.
 
 **Three pillars:**
-- **Detection** -- 5-stage tiered ensemble achieving 85-90% detection with 0% false positives
+- **Detection** -- 5-stage tiered ensemble achieving 85-90% detection with a low false-positive rate
 - **Deception** -- Honeypot endpoints, honey tokens, decoy responses that waste attacker time
 - **Intelligence** -- STIX 2.1 threat intel export, MITRE ATLAS mapping, IOC extraction
 
@@ -43,8 +46,8 @@ Oubliette Shield is an open-source AI LLM Firewall that protects LLM application
 
 | Metric | Value |
 |--------|-------|
-| Detection rate | 85-90% (850% improvement over baseline) |
-| False positive rate | 0% (111/111 true negatives) |
+| Detection rate | 85-90% (internal benchmark) |
+| False positive rate | low (0/111 false positives on the internal benign set) |
 | ML F1 / AUC-ROC | 0.98 / 0.99 |
 | Pre-filter latency | ~10ms (1,550x faster than LLM-only) |
 | ML classifier latency | ~2ms |
