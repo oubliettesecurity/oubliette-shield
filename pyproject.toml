@@ -157,7 +157,7 @@ include = ["oubliette_shield*"]
 exclude = ["tests*", "test_*", "anomaly-detection*", "AI-CTF*", "threat_intel*"]
 
 [tool.setuptools.package-data]
-oubliette_shield = ["py.typed"]
+oubliette_shield = ["py.typed", "data/atlas_techniques.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["."]

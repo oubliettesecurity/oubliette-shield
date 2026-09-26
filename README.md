@@ -179,7 +179,7 @@ Every detection is automatically mapped to industry frameworks:
 
 - **OWASP LLM Top 10** (2025) -- Full coverage of LLM01-LLM10
 - **OWASP Agentic AI Top 15** -- 15/15 categories covered
-- **MITRE ATLAS** -- 13 adversarial AI techniques mapped
+- **MITRE ATLAS** (v2026.06) -- detections mapped to 9 ATLAS techniques plus the Direct prompt-injection sub-technique
 - **NIST SP 800-53 Rev 5** -- 9 security controls (SI-10, SI-4, AU-3, AU-6, IR-4, IR-5, AC-4, SC-7, CA-7)
 - **NIST AI RMF 1.0** -- MAP, MEASURE, MANAGE, GOVERN functions
 - **CMMC 2.0** -- Levels 1-3 (AC, AU, SI, IR, CA domains)
