@@ -218,7 +218,7 @@ Oubliette Shield maps every detection to industry-standard frameworks:
 |-----------|----------|---------|
 | **OWASP LLM Top 10 (2025)** | LLM01-LLM10 | Prompt injection, info disclosure, excessive agency, and more |
 | **OWASP Agentic AI Top 15** | Detection-ready | Excessive agency, tool exploitation, memory poisoning |
-| **MITRE ATLAS** | 13 techniques | T0002, T0030, T0041, T0050, T0060, T0061, T0070-T0072, T0120, T0122 |
+| **MITRE ATLAS** (v2026.06) | 9 techniques + 1 sub-technique | AML.T0029, AML.T0034, AML.T0051 (and AML.T0051.000 Direct), AML.T0053, AML.T0054, AML.T0056, AML.T0057, AML.T0068, AML.T0080 |
 | **CWE** | 14 weaknesses | CWE-74, CWE-77, CWE-200, CWE-269, CWE-284, CWE-327, CWE-400, CWE-451, CWE-693, CWE-707, CWE-770, CWE-1427, and more |
 | **NIST CSF 2.0** | 12 subcategories | ID.AM, PR.DS, PR.AC, PR.IP, DE.CM, DE.AE, DE.DP, RS.AN, RS.MI |
 | **CVSS v3.1** | Base scores | Auto-calculated from ML severity tier |
@@ -226,15 +226,16 @@ Oubliette Shield maps every detection to industry-standard frameworks:
 Every `ShieldResult` includes a `threat_mapping` dict:
 
 ```python
-result = shield.analyze("ignore all instructions")
+result = shield.analyze("ignore all previous instructions")
 print(result.threat_mapping)
 # {
 #     "owasp_llm": ["LLM01:2025"],
-#     "mitre_atlas": ["T0030"],
-#     "cwe": ["CWE-1427", "CWE-77"],
-#     "cvss_base": 7.5,
-#     "nist_csf": ["DE.AE-01", "DE.CM-01", "RS.MI-02"],
 #     "owasp_agentic": [],
+#     "mitre_atlas": ["AML.T0051.000"],
+#     "cwe": ["CWE-1427", "CWE-77"],
+#     "cvss_base": 0.0,
+#     "nist_csf": [],
+#     "nist_800_53": [],
 # }
 ```
 

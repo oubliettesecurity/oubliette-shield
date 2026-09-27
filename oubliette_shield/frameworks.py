@@ -14,6 +14,12 @@ Covers:
 - OWASP COMPASS export utilities
 """
 
+from __future__ import annotations
+
+import functools
+import json
+from importlib import resources
+
 # ---------------------------------------------------------------------------
 # CWE Mappings - attack category -> CWE IDs
 # ---------------------------------------------------------------------------
@@ -68,22 +74,50 @@ OWASP_AGENTIC_TOP15 = {
 
 # ---------------------------------------------------------------------------
 # MITRE ATLAS Technique Mappings
+#
+# IDs, names and tactics are taken from the MITRE ATLAS data release
+# v2026.06 (ATLAS-2026.06.yaml, https://github.com/mitre-atlas/atlas-data).
+# Only the techniques Shield actually emits are listed here; the full list of
+# valid IDs for that release is vendored in ``data/atlas_techniques.json`` and
+# ``tests/test_atlas_ids.py`` checks every emitted ID against it.
+# Emitted IDs use the full ATLAS form (``AML.T0051``, ``AML.T0051.000``).
 # ---------------------------------------------------------------------------
+ATLAS_VERSION = "2026.06"
+
 MITRE_ATLAS_TECHNIQUES = {
-    "T0002": {"name": "Social Engineering", "tactic": "initial-access"},
-    "T0011": {"name": "Supply Chain Compromise", "tactic": "initial-access"},
-    "T0030": {"name": "Prompt Injection", "tactic": "initial-access"},
-    "T0041": {"name": "Poison Training Data", "tactic": "ml-attack-staging"},
-    "T0042": {"name": "Manipulate Training Data", "tactic": "ml-attack-staging"},
-    "T0050": {"name": "Abuse of Excessive Agency", "tactic": "ml-attack-staging"},
-    "T0060": {"name": "Input Data Evasion", "tactic": "evasion"},
-    "T0061": {"name": "LLM Jailbreak", "tactic": "evasion"},
-    "T0070": {"name": "Inference API Access", "tactic": "collection"},
-    "T0071": {"name": "System Prompt Extraction", "tactic": "collection"},
-    "T0072": {"name": "Credential Extraction", "tactic": "collection"},
-    "T0120": {"name": "Output Manipulation", "tactic": "impact"},
-    "T0122": {"name": "Resource Exhaustion", "tactic": "impact"},
+    "AML.T0029": {"name": "Denial of AI Service", "tactic": "impact"},
+    "AML.T0034": {"name": "Cost Harvesting", "tactic": "impact"},
+    "AML.T0051": {"name": "LLM Prompt Injection", "tactic": "execution"},
+    "AML.T0051.000": {"name": "LLM Prompt Injection: Direct", "tactic": "execution"},
+    "AML.T0053": {"name": "AI Agent Tool Invocation", "tactic": "execution"},
+    "AML.T0054": {"name": "LLM Jailbreak", "tactic": "defense-evasion"},
+    "AML.T0056": {"name": "Extract LLM System Prompt", "tactic": "exfiltration"},
+    "AML.T0057": {"name": "LLM Data Leakage", "tactic": "exfiltration"},
+    "AML.T0068": {"name": "LLM Prompt Obfuscation", "tactic": "defense-evasion"},
+    "AML.T0080": {"name": "AI Agent Context Poisoning", "tactic": "persistence"},
 }
+
+
+@functools.lru_cache(maxsize=1)
+def load_atlas_catalog() -> dict[str, str]:
+    """Return the vendored ATLAS technique catalog as ``{id: name}``.
+
+    Contains every technique and sub-technique ID in the ATLAS release named
+    by ``ATLAS_VERSION``.
+    """
+    raw = resources.files("oubliette_shield").joinpath("data/atlas_techniques.json")
+    data = json.loads(raw.read_text(encoding="utf-8"))
+    techniques: dict[str, str] = data["techniques"]
+    return techniques
+
+
+def atlas_technique_name(technique_id: str) -> str:
+    """Human-readable ATLAS name for ``technique_id`` (the ID itself if unknown)."""
+    known = MITRE_ATLAS_TECHNIQUES.get(technique_id)
+    if known:
+        return known["name"]
+    return load_atlas_catalog().get(technique_id, technique_id)
+
 
 # ---------------------------------------------------------------------------
 # NIST CSF 2.0 Subcategory Mapping
@@ -190,38 +224,39 @@ DETECTION_TO_OWASP = {
 }
 
 # ---------------------------------------------------------------------------
-# Detection method -> MITRE ATLAS technique mapping
+# Detection method -> MITRE ATLAS technique mapping (ATLAS v2026.06 IDs)
 # ---------------------------------------------------------------------------
 DETECTION_TO_MITRE = {
     # Pre-filter block reasons
-    "PRE_BLOCKED_CRITICAL_KEYWORDS": ["T0030"],
-    "PRE_BLOCKED_INSTRUCTION_OVERRIDE": ["T0030"],
-    "PRE_BLOCKED_PERSONA_OVERRIDE": ["T0030"],
-    "PRE_BLOCKED_DAN_JAILBREAK": ["T0061"],
-    "PRE_BLOCKED_HYPOTHETICAL": ["T0061"],
-    "PRE_BLOCKED_LOGIC_TRAP": ["T0061"],
-    "PRE_BLOCKED_PROMPT_EXTRACTION": ["T0071"],
-    "PRE_BLOCKED_CONTEXT_SWITCH": ["T0030"],
-    "PRE_BLOCKED_JAILBREAK": ["T0061"],
-    "PRE_BLOCKED_FICTIONAL": ["T0061"],
-    "PRE_BLOCKED_ROLEPLAY": ["T0061"],
-    "PRE_BLOCKED_HEAVY_SANITIZATION": ["T0060"],
-    "PRE_BLOCKED_SESSION_ESCALATED": ["T0030"],
-    "PRE_BLOCKED_MULTIPLE_PATTERNS": ["T0030"],
-    "PRE_BLOCKED_REPEATED_SANITIZATION": ["T0060"],
-    "PRE_BLOCKED_ROLEPLAY_JAILBREAK_ATK006": ["T0061"],
+    "PRE_BLOCKED_CRITICAL_KEYWORDS": ["AML.T0051.000"],
+    "PRE_BLOCKED_INSTRUCTION_OVERRIDE": ["AML.T0051.000"],
+    "PRE_BLOCKED_PERSONA_OVERRIDE": ["AML.T0051.000"],
+    "PRE_BLOCKED_DAN_JAILBREAK": ["AML.T0054"],
+    "PRE_BLOCKED_HYPOTHETICAL": ["AML.T0054"],
+    "PRE_BLOCKED_LOGIC_TRAP": ["AML.T0054"],
+    "PRE_BLOCKED_PROMPT_EXTRACTION": ["AML.T0056"],
+    "PRE_BLOCKED_CONTEXT_SWITCH": ["AML.T0051.000"],
+    "PRE_BLOCKED_JAILBREAK": ["AML.T0054"],
+    "PRE_BLOCKED_FICTIONAL": ["AML.T0054"],
+    "PRE_BLOCKED_ROLEPLAY": ["AML.T0054"],
+    "PRE_BLOCKED_HEAVY_SANITIZATION": ["AML.T0068"],
+    "PRE_BLOCKED_SESSION_ESCALATED": ["AML.T0051"],
+    "PRE_BLOCKED_MULTIPLE_PATTERNS": ["AML.T0051"],
+    "PRE_BLOCKED_REPEATED_SANITIZATION": ["AML.T0068"],
+    "PRE_BLOCKED_ROLEPLAY_JAILBREAK_ATK006": ["AML.T0054"],
     # ML threat types
-    "injection": ["T0030"],
-    "jailbreak": ["T0061"],
-    "extraction": ["T0071"],
-    "social_engineering": ["T0002"],
-    "manipulation": ["T0042"],
-    "exploitation": ["T0120"],
-    "resource_abuse": ["T0122"],
-    "tool_abuse": ["T0050"],
+    "injection": ["AML.T0051"],
+    "prompt_injection": ["AML.T0051"],
+    "jailbreak": ["AML.T0054"],
+    "extraction": ["AML.T0056", "AML.T0057"],
+    "social_engineering": ["AML.T0051.000"],
+    "manipulation": ["AML.T0080"],
+    # "exploitation": intentionally unmapped -- no single ATLAS technique fits
+    "resource_abuse": ["AML.T0029", "AML.T0034"],
+    "tool_abuse": ["AML.T0053"],
     # Sanitization
-    "sanitization_rejection": ["T0060"],
-    "escalation": ["T0030"],
+    "sanitization_rejection": ["AML.T0068"],
+    "escalation": ["AML.T0051"],
 }
 
 # ---------------------------------------------------------------------------
