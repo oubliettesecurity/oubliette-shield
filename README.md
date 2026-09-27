@@ -5,9 +5,8 @@
 [![PyPI](https://img.shields.io/pypi/v/oubliette-shield)](https://pypi.org/project/oubliette-shield/)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![Detection Rate](https://img.shields.io/badge/detection_rate-85--90%25-brightgreen)]()
 [![ML F1](https://img.shields.io/badge/ML_F1-0.98-brightgreen)]()
-[![Tests](https://img.shields.io/badge/tests-280%2B_passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-220%2B_passing-brightgreen)]()
 
 **Oubliette Security** | Disabled Veteran-Owned Small Business (SDVOSB)
 
@@ -35,26 +34,25 @@ print(result.blocked)    # True
 
 ## What Is Oubliette Shield?
 
-Oubliette Shield is an open-source AI LLM Firewall that protects LLM applications from prompt injection, jailbreak, and adversarial attacks. Rather than simply blocking attacks, the platform deploys **cyber deception techniques** -- serving convincing decoy responses and honey tokens to attackers while collecting forensic intelligence.
+Oubliette Shield is an open-source AI LLM Firewall that protects LLM applications from prompt injection, jailbreak, and adversarial attacks.
 
-**Three pillars:**
-- **Detection** -- 5-stage tiered ensemble achieving 85-90% detection with a low false-positive rate
-- **Deception** -- Honeypot endpoints, honey tokens, decoy responses that waste attacker time
-- **Intelligence** -- STIX 2.1 threat intel export, MITRE ATLAS mapping, IOC extraction
+**What this repository contains:**
+- **Detection** -- 5-stage tiered pipeline: sanitizer, pattern pre-filter, ML classifier (optional external API), LLM judge, session tracking
+- **Intelligence** -- OWASP, MITRE ATLAS, NIST, CWE and CVSS mapping on each result, CEF/SIEM logging, webhook alerting
+
+The Oubliette platform's deception components (honeypot endpoints, honey tokens, decoy responses) and threat-intelligence export (STIX 2.1, IOC extraction) are developed in the private source repository and are not part of this mirror. This mirror only includes CEF logging for honey-token events.
 
 ## Key Metrics
 
 | Metric | Value |
 |--------|-------|
-| Detection rate | 85-90% (internal benchmark) |
 | False positive rate | low (0/111 false positives on the internal benign set) |
-| ML F1 / AUC-ROC | 0.98 / 0.99 |
-| Pre-filter latency | ~10ms (1,550x faster than LLM-only) |
-| ML classifier latency | ~2ms |
+| ML F1 / AUC-ROC | 0.98 / 0.99 (internal evaluation; the classifier runs behind the optional external anomaly-detection API and is not in this repository) |
+| Pre-filter latency | 0.006 ms median / 0.010 ms p99 per item (`benchmarks/benchmark_throughput.json` in the private Shield source repository, 2026-04-22); 0.11 ms mean vs 1,590.94 ms mean on the LLM-judge path in a 10-scenario comparison run ([oubliette-dungeon `benchmarks/shield_comparison.json`](https://github.com/oubliettesecurity/oubliette-dungeon/blob/main/benchmarks/shield_comparison.json), 2026-03-12) |
 | LLM backends | 12 providers (Ollama, OpenAI, Anthropic, Azure, Bedrock, Vertex, Gemini, llama.cpp, Transformers, and more) |
 | SDK integrations | 9 frameworks |
-| Attack scenarios | 57 red team scenarios mapped to MITRE ATLAS |
-| Automated tests | 280+ |
+| Red team scenarios | 72 in the separate [Oubliette Dungeon](https://github.com/oubliettesecurity/oubliette-dungeon) package: 57 in the default library + 15 opt-in Crescendo multi-turn scenarios |
+| Automated tests | 220+ |
 
 ## SDK Integrations
 
@@ -140,11 +138,11 @@ Install optional dependencies: `pip install oubliette-shield[langchain,fastapi,l
 ```
                      Input Message
                           |
-                 [Stage 1: SANITIZE]           ~1ms
+                 [Stage 1: SANITIZE]
                  Strip HTML, scripts,
                  markdown, CSV formulas
                           |
-                 [Stage 2: PRE-FILTER]         ~10ms
+                 [Stage 2: PRE-FILTER]         0.006 ms median*
                  11 pattern-matching rules
                  Obvious attacks blocked
                           |
@@ -152,15 +150,16 @@ Install optional dependencies: `pip install oubliette-shield[langchain,fastapi,l
               |                       |
         (Blocked)              (Passed)
          Return                    |
-        MALICIOUS         [Stage 3: ML CLASSIFIER]    ~2ms
-                           733-dim TF-IDF + LogReg
+        MALICIOUS         [Stage 3: ML CLASSIFIER]
+                           Optional external API
+                           (ANOMALY_API_URL)
                                    |
                     +--------------+--------------+
                     |              |              |
               Score >= 0.85   0.30 < Score   Score <= 0.30
                MALICIOUS       < 0.85           SAFE
                                 |
-                        [Stage 4: LLM JUDGE]       ~15s
+                        [Stage 4: LLM JUDGE]       ~1.6 s mean*
                          12 provider backends
                          Smart verdict extraction
                                 |
@@ -171,19 +170,19 @@ Install optional dependencies: `pip install oubliette-shield[langchain,fastapi,l
                          Webhook dispatch
 ```
 
-The tiered design eliminates 85-95% of expensive LLM judge calls. Most attacks are caught in under 10ms by the pre-filter or ML classifier.
+\* Measured timings, not measured on this mirror: pre-filter median per item from `benchmarks/benchmark_throughput.json` in the private Shield source repository (2026-04-22, 5,000-item seeded corpus, Windows 11, Python 3.14.2; that tree's pre-filter applies the same rules as this mirror's, plus Unicode NFKD normalization); LLM-judge path mean from oubliette-dungeon [`benchmarks/shield_comparison.json`](https://github.com/oubliettesecurity/oubliette-dungeon/blob/main/benchmarks/shield_comparison.json) (2026-03-12, 20 samples across four providers). The sanitizer and ML classifier stages have no committed timing measurement.
+
+Only inputs the pre-filter doesn't block and the ML classifier can't settle (score between 0.30 and 0.85, or no ML API configured) go to the LLM judge. If no LLM judge is available, Shield fails closed and returns `MALICIOUS`. The pre-filter is several orders of magnitude cheaper than an LLM call.
 
 ## Compliance Mapping
 
-Every detection is automatically mapped to industry frameworks:
+Shield maps detections to industry frameworks:
 
-- **OWASP LLM Top 10** (2025) -- Full coverage of LLM01-LLM10
-- **OWASP Agentic AI Top 15** -- 15/15 categories covered
+- **OWASP LLM Top 10** (2025) -- detections mapped to 7 of 10 categories (LLM01, LLM02, LLM05, LLM06, LLM07, LLM08, LLM10)
+- **OWASP Agentic AI Top 15** -- the 15-category catalog is included (`OWASP_AGENTIC_TOP15`), but no detection in this mirror maps to an Agentic category yet (`threat_mapping["owasp_agentic"]` is always empty)
 - **MITRE ATLAS** (v2026.06) -- detections mapped to 9 ATLAS techniques plus the Direct prompt-injection sub-technique
 - **NIST SP 800-53 Rev 5** -- 9 security controls (SI-10, SI-4, AU-3, AU-6, IR-4, IR-5, AC-4, SC-7, CA-7)
-- **NIST AI RMF 1.0** -- MAP, MEASURE, MANAGE, GOVERN functions
-- **CMMC 2.0** -- Levels 1-3 (AC, AU, SI, IR, CA domains)
-- **NIST CSF 2.0** -- 12 subcategories
+- **NIST CSF 2.0** -- 12 subcategories (detections map to 10)
 - **CWE** -- 13 weakness identifiers
 - **CVSS v3.1** -- Auto-calculated base scores
 
@@ -191,8 +190,7 @@ Every detection is automatically mapped to industry frameworks:
 
 - **12 LLM provider backends** -- Ollama, OpenAI, Anthropic, Azure OpenAI, AWS Bedrock, Google Vertex AI, Google Gemini, llama.cpp, Transformers, OpenAI-compatible, Structured Ollama, Fallback Chain
 - **Multi-turn attack tracking** -- Session state accumulation with automatic escalation
-- **Automated red teaming** -- 57 attack scenarios with scheduled testing
-- **Threat intelligence** -- IOC extraction, STIX 2.1 export, MITRE ATLAS mapping
+- **Automated red teaming** -- via the separate [Oubliette Dungeon](https://github.com/oubliettesecurity/oubliette-dungeon) package: 72 attack scenarios (57 default + 15 opt-in Crescendo multi-turn) with scheduled testing
 - **SIEM integration** -- CEF logging (ArcSight Rev 25) via file, syslog, or stdout
 - **Webhook alerting** -- Slack, Microsoft Teams, PagerDuty, Allama SOAR
 - **Output scanning** -- Secrets, PII, credentials, invisible text, URL, gibberish, refusal detection
@@ -207,25 +205,11 @@ Every detection is automatically mapped to industry frameworks:
 
 The core detection pipeline, available as a standalone PyPI package. Import as a library, use as Flask/FastAPI middleware, or integrate via 9 SDK adapters.
 
-### Honeypot Engine (`oubliette_security.py`)
+### Oubliette Dungeon ([oubliette-dungeon](https://github.com/oubliettesecurity/oubliette-dungeon))
 
-Flask server that intercepts chat messages, runs the detection pipeline, and deploys deception (decoy responses + honey tokens) when attacks are detected.
+Separate adversarial testing engine with 72 YAML-defined attack scenarios (57 in the default library plus 15 opt-in Crescendo multi-turn scenarios), multi-provider comparison, React dashboard, and CLI. Install: `pip install oubliette-dungeon`
 
-### Red Team Framework (`redteam_engine.py`)
-
-Automated AI attack testing with 57 YAML-defined scenarios mapped to MITRE ATLAS and OWASP LLM Top 10. Scheduled recurring campaigns with trend analysis.
-
-### Threat Intelligence (`threat_intel/`)
-
-IOC extraction, STIX 2.1 export, feed ingestion, MITRE ATLAS mapping, and monthly-sharded storage.
-
-### AI-CTF (`AI-CTF/`)
-
-11 progressive prompt injection CTF challenges built on Open WebUI and Ollama for security training.
-
-### Anomaly Detection (`anomaly-detection/`)
-
-ML pipeline for log and chat anomaly detection with integrations for Google Chronicle, Splunk, and Elasticsearch.
+The platform's honeypot engine, threat-intelligence tooling and anomaly-detection model live in the private source repository and are not part of this mirror.
 
 ## Deployment
 
@@ -246,42 +230,16 @@ from oubliette_shield import Shield, create_shield_blueprint
 app.register_blueprint(create_shield_blueprint(Shield()), url_prefix="/shield")
 ```
 
-### Docker Compose
-```bash
-# Core platform
-docker compose up -d
-
-# With Ollama LLM sidecar
-docker compose --profile llm up -d
-
-# Full stack (LLM + ML)
-docker compose --profile llm --profile ml up -d
-```
-
 ## Testing
 
 ```bash
-# Shield unit tests (280+)
+# Shield unit tests (220+)
 pytest tests/ -v
 
 # Quick validation
 python -m pytest tests/test_new_sdk_integrations.py -v  # 83 SDK tests
 python -m pytest tests/test_integration.py -v            # Shield core tests
-
-# Red team simulation (requires running server)
-python redteam_engine.py
 ```
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [White Paper](docs/WHITEPAPER.md) | Full technical paper with empirical results |
-| [Competitive Comparison](docs/COMPETITIVE_COMPARISON.md) | Feature comparison vs. Lakera, LLM Guard, NeMo, etc. |
-| [Federal Positioning](docs/FEDERAL_POSITIONING.md) | EO 14110, NIST AI RMF, FedRAMP, CMMC mapping |
-| [Compliance Matrix](docs/COMPLIANCE_MATRIX.md) | Full OWASP, MITRE, NIST, CWE, CVSS mapping |
-| [ROI Analysis](docs/ROI_ANALYSIS.md) | Quantitative ROI for 3 deployment sizes |
-| [DARPA Abstract](docs/DARPA_I2O_ABSTRACT.md) | Deceptive Shield research proposal |
 
 ## SDVOSB
 

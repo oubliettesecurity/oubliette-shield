@@ -5,8 +5,8 @@
 Oubliette Shield is a standalone detection pipeline that sits in front of your LLM and blocks malicious inputs before they reach the model. It uses a tiered defense strategy for both speed and accuracy:
 
 1. **Input Sanitization** - Strips HTML, script tags, markdown injection, CSV formulas (9 sanitizer types)
-2. **Pre-Filter** - Pattern-based blocking of obvious attacks in ~10ms
-3. **ML Classifier** - TF-IDF + LogisticRegression scoring in ~2ms
+2. **Pre-Filter** - Pattern-based blocking of obvious attacks (0.006 ms median per item in the committed throughput benchmark, `benchmarks/benchmark_throughput.json` in the private Shield source repository, 2026-04-22; not measured on this mirror)
+3. **ML Classifier** - Optional scoring from an external anomaly-detection API (`ANOMALY_API_URL`, disabled by default)
 4. **LLM Judge** - Pluggable LLM-based classification for ambiguous cases
 
 ## Installation
@@ -49,7 +49,8 @@ from oubliette_shield import Shield
 
 shield = Shield()
 
-# Safe input
+# Safe input (needs a configured LLM judge, see LLM Providers; with no judge
+# available Shield fails closed and returns MALICIOUS)
 result = shield.analyze("What is the weather today?")
 assert result.verdict == "SAFE"
 assert result.blocked is False
@@ -172,10 +173,10 @@ User Input
 [1. Sanitizer] -- Strip HTML, scripts, markdown injection (9 types)
     |
     v
-[2. Pre-Filter] -- Pattern match obvious attacks (~10ms)
+[2. Pre-Filter] -- Pattern match obvious attacks (0.006 ms median, see above)
     |  (blocked? -> MALICIOUS)
     v
-[3. ML Classifier] -- TF-IDF + LogReg anomaly score (~2ms)
+[3. ML Classifier] -- Optional external anomaly API score
     |  (high score? -> MALICIOUS)
     |  (low score?  -> SAFE)
     v
@@ -212,14 +213,14 @@ Unlike proxy-based solutions that sit outside the application boundary, RASP dep
 
 ## Framework Compliance
 
-Oubliette Shield maps every detection to industry-standard frameworks:
+Oubliette Shield maps detections to industry-standard frameworks:
 
 | Framework | Coverage | Details |
 |-----------|----------|---------|
-| **OWASP LLM Top 10 (2025)** | LLM01-LLM10 | Prompt injection, info disclosure, excessive agency, and more |
-| **OWASP Agentic AI Top 15** | Detection-ready | Excessive agency, tool exploitation, memory poisoning |
+| **OWASP LLM Top 10 (2025)** | 7 of 10 categories | LLM01, LLM02, LLM05, LLM06, LLM07, LLM08, LLM10 |
+| **OWASP Agentic AI Top 15** | Catalog only | All 15 categories are listed in `OWASP_AGENTIC_TOP15`; no detection maps to them yet, so `owasp_agentic` is always empty |
 | **MITRE ATLAS** (v2026.06) | 9 techniques + 1 sub-technique | AML.T0029, AML.T0034, AML.T0051 (and AML.T0051.000 Direct), AML.T0053, AML.T0054, AML.T0056, AML.T0057, AML.T0068, AML.T0080 |
-| **CWE** | 14 weaknesses | CWE-74, CWE-77, CWE-200, CWE-269, CWE-284, CWE-327, CWE-400, CWE-451, CWE-693, CWE-707, CWE-770, CWE-1427, and more |
+| **CWE** | 13 identifiers (category mapping) | CWE-74, CWE-77, CWE-200, CWE-209, CWE-269, CWE-284, CWE-327, CWE-400, CWE-451, CWE-693, CWE-707, CWE-770, CWE-1427 |
 | **NIST CSF 2.0** | 12 subcategories | ID.AM, PR.DS, PR.AC, PR.IP, DE.CM, DE.AE, DE.DP, RS.AN, RS.MI |
 | **CVSS v3.1** | Base scores | Auto-calculated from ML severity tier |
 
