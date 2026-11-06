@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limiting per IP address
 - Input sanitization for 9 attack surface types (HTML, script tags, markdown injection, CSV formulas, CDATA, event handlers, etc.)
 - Pre-filter pattern matching for instruction override, persona override, DAN/jailbreak, prompt extraction, logic traps, hypothetical framing, and context switching
-- ML classifier using TF-IDF + LogisticRegression (~2ms inference)
+- ML classifier using TF-IDF + LogisticRegression (lightweight local model)
 - Typed package with `py.typed` marker
 - Apache 2.0 license
 

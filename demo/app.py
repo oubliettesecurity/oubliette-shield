@@ -517,7 +517,7 @@ PIPELINE_STAGES = [
             "jailbreaks, roleplay framing (ATK-006), logic traps (ATK-011), "
             "and session escalation."
         ),
-        "typical_latency": "~10 ms",
+        "typical_latency": "sub-millisecond (0.11 ms mean in the 2026-03-12 comparison run; 0.006 ms median in the 2026-04-22 throughput run)",
         "blocks": True,
     },
     {
@@ -528,7 +528,7 @@ PIPELINE_STAGES = [
             "Scores >= 0.85 auto-block; scores <= 0.30 auto-pass; "
             "ambiguous range defers to LLM Judge."
         ),
-        "typical_latency": "~2 ms",
+        "typical_latency": "lightweight local model",
         "blocks": True,
     },
     {

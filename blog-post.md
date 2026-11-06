@@ -1,7 +1,7 @@
 ---
 title: "Stop Blocking Prompt Injections. Start Trapping Attackers."
 published: false
-description: "How we built an open-source LLM firewall that detects prompt injection in under 2ms -- and then lies to the attacker."
+description: "How we built an open-source LLM firewall that detects prompt injection with a lightweight local model -- and then lies to the attacker."
 tags: ai, security, python, llm
 cover_image:
 ---
@@ -50,18 +50,16 @@ User Input
     |
 [1. Sanitizer]        -- Strip HTML, scripts, markdown injection (9 types)
     |
-[2. Pre-Filter]       -- Pattern-match obvious attacks (~10ms)
+[2. Pre-Filter]       -- Pattern-match obvious attacks
     |
-[3. ML Classifier]    -- TF-IDF + LogReg model (~2ms, F1=0.98)
+[3. ML Classifier]    -- TF-IDF + LogReg model (lightweight local model, F1=0.98)
     |
 [4. LLM Judge]        -- 12 provider backends for ambiguous cases
     |
 [5. Session Tracker]  -- Multi-turn escalation detection
 ```
 
-The key insight: **most attacks are obvious.** "Ignore all previous instructions" doesn't need a $0.01 GPT-4 API call to classify. A pattern match catches it in 10 milliseconds. The bundled ML model handles the next tier in 2 milliseconds. The expensive LLM judge only runs for genuinely ambiguous inputs that fall in the gray zone -- about 5-15% of traffic.
-
-This means your p95 latency for attack detection is under 15ms, not the 2-3 seconds you'd get from routing everything through an LLM classifier.
+The key insight: **most attacks are obvious.** "Ignore all previous instructions" doesn't need a $0.01 GPT-4 API call to classify. Pre-filter latency is sub-millisecond (0.11 ms mean in the 2026-03-12 comparison run; 0.006 ms median in the 2026-04-22 throughput run). The bundled ML classifier is a lightweight local model. The expensive LLM judge only runs for genuinely ambiguous inputs that fall in the gray zone -- about 5-15% of traffic. The LLM judge path averaged about 1.6 s in the same comparison run.
 
 ## 3 Lines to Protect Any LLM App
 
@@ -130,7 +128,7 @@ response = litellm.completion(model="gpt-4", messages=[...])
 
 Plus CrewAI, Haystack, Semantic Kernel, DSPy, and LlamaIndex. Every integration follows the same pattern: import, wrap, done.
 
-## The ML Model: F1 = 0.98 in 2ms
+## The ML Model: F1 = 0.98
 
 The bundled classifier is a LogisticRegression model trained on 1,365 labeled samples (553 benign, 812 malicious) using TF-IDF word and character n-grams plus 33 engineered features: structural metrics (length, entropy, special character ratios), keyword group densities across 12 attack categories, and regex pattern detections for instruction overrides, role reassignment, base64 encoding, and markup injection.
 
@@ -140,13 +138,12 @@ The numbers:
 |--------|-------|
 | F1 Score | 0.98 |
 | AUC-ROC | 0.99 |
-| Inference time | ~2ms |
 | Model size | ~100KB |
 | False positive rate | 0% on test set |
 
 The model ships inside the pip package. No external API. No GPU. No Docker sidecar. `pip install` and it works.
 
-We chose LogisticRegression over fancier architectures deliberately. In production security tooling, you need three things: calibrated probabilities (not just binary predictions), sub-millisecond inference, and explainability. LogReg gives you all three. The TF-IDF features capture the textual signal, and the engineered features capture structural patterns that pure text models miss -- like the ratio of uppercase characters (high in "IGNORE ALL INSTRUCTIONS") or the presence of base64-encoded payloads.
+We chose LogisticRegression over fancier architectures deliberately. In production security tooling, you need three things: calibrated probabilities (not just binary predictions), a lightweight local model, and explainability. LogReg gives you all three. The TF-IDF features capture the textual signal, and the engineered features capture structural patterns that pure text models miss -- like the ratio of uppercase characters (high in "IGNORE ALL INSTRUCTIONS") or the presence of base64-encoded payloads.
 
 ## 12 LLM Provider Backends
 
@@ -244,8 +241,8 @@ These aren't vague "we support NIST" claims. They're control-by-control mappings
 | Detection rate | 85-90% |
 | False positive rate | 0% (111/111 true negatives) |
 | ML F1 / AUC-ROC | 0.98 / 0.99 |
-| Pre-filter latency | ~10ms |
-| ML classifier latency | ~2ms |
+| Pre-filter latency | sub-millisecond (0.11 ms mean in the 2026-03-12 comparison run; 0.006 ms median in the 2026-04-22 throughput run) |
+| ML classifier | lightweight local model |
 | LLM backends | 12 providers |
 | SDK integrations | 9 frameworks |
 | Attack scenarios | 57 red team scenarios |

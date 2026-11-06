@@ -13,7 +13,7 @@ from .ml_client import MLClient
 class EnsembleEngine:
     """
     Tiered ensemble detection: Pre-filter -> ML -> LLM.
-    Blocks obvious attacks fast (~10ms), uses expensive LLM only for ambiguity.
+    Blocks obvious attacks with the pre-filter, which is sub-millisecond (0.11 ms mean in the 2026-03-12 comparison run; 0.006 ms median in the 2026-04-22 throughput run), and uses the expensive LLM only for ambiguity.
     """
 
     def __init__(self, llm_judge=None, ml_client=None):
@@ -36,7 +36,7 @@ class EnsembleEngine:
               - ml_result: dict with score/threat_type/severity or None
               - llm_verdict: "SAFE"/"UNSAFE"/PRE_BLOCKED_* or None
         """
-        # TIER 1: Pre-filter (fast pattern match, ~10ms)
+        # TIER 1: Pre-filter (fast pattern match)
         should_block, block_reason = pre_filter_check(user_input, session, sanitizations)
         if should_block:
             return "MALICIOUS", None, f"PRE_BLOCKED_{block_reason}"
