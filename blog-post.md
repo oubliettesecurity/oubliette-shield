@@ -238,7 +238,6 @@ These aren't vague "we support NIST" claims. They're control-by-control mappings
 
 | Metric | Value |
 |--------|-------|
-| Detection rate | 85-90% |
 | False positive rate | 0% (111/111 true negatives) |
 | ML F1 / AUC-ROC | 0.98 / 0.99 |
 | Pre-filter latency | sub-millisecond (0.11 ms mean in the 2026-03-12 comparison run; 0.006 ms median in the 2026-04-22 throughput run) |
