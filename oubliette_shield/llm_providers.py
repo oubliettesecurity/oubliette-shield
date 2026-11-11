@@ -512,7 +512,7 @@ class LlamaCppJudge(LLMJudge):
 class TransformerClassifierJudge(LLMJudge):
     """HuggingFace transformers binary injection classifier.
 
-    Uses a text-classification pipeline for fast (~30ms) binary verdicts.
+    Uses a text-classification pipeline for binary verdicts.
     Not a generative model -- overrides get_verdict() entirely.
     Requires: pip install transformers>=4.35.0 torch>=2.0.0
 

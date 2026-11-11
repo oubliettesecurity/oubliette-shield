@@ -1,7 +1,7 @@
 """
 Oubliette Shield - Pre-Filter
 Blocks obvious attacks before expensive ML/LLM processing.
-Achieves ~10ms blocking vs ~15s LLM judgment (1,550x speedup).
+Pre-filter latency is sub-millisecond (0.11 ms mean in the 2026-03-12 comparison run; 0.006 ms median in the 2026-04-22 throughput run). The LLM judge path averaged about 1.6 s in the same comparison run.
 """
 
 from . import config
